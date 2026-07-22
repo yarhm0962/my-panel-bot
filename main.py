@@ -8,7 +8,7 @@ from flask import Flask, Response
 import threading
 
 TOKEN = os.getenv("TOKEN")
-WEBSITE_DOMAIN = "https://my-panel-bot.onrender.com"
+WEBSITE_DOMAIN = "my-panel-bot.onrender.com"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -31,13 +31,13 @@ SCRIPTS_FILE = "scripts.json"
 
 def load_json(filename):
     try:
-        with open(filename, "r") as f:
+        with open(filename, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
         return {}
 
 def save_json(filename, data):
-    with open(filename, "w") as f:
+    with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f)
 
 def generate_user_key():
@@ -75,10 +75,6 @@ end
 local function CheckKey()
     local key = getgenv().SCRIPT_KEY
     if not key or key == nil or key == "" then
-        return false
-    end
-    local CORRECT_KEY = "REPLACE_WITH_USER_KEY"
-    if key ~= CORRECT_KEY then
         return false
     end
     return true
@@ -176,7 +172,7 @@ async def on_ready():
     print(f"Bot Online: {client.user}")
     client.add_view(PanelView())
 
-@client.tree.command(name="create panel", description="Create control panel")
+@client.tree.command(name="create-panel", description="Create control panel")
 @app_commands.describe(script_title="Embed title", description="Embed description (optional)")
 async def create_panel(interaction: discord.Interaction, script_title: str, description: str = None):
     if not interaction.user.guild_permissions.administrator:
@@ -208,7 +204,7 @@ async def genkey(interaction: discord.Interaction, days: int):
     save_json(KEYS_FILE, keys)
     await interaction.response.send_message(f"✅ Key Generated:\n`{user_key}`\nValid: {days} days", ephemeral=True)
 
-@client.tree.command(name="add script", description="Add Lua script file (Admin only)")
+@client.tree.command(name="add-script", description="Add Lua script file (Admin only)")
 @app_commands.describe(file="Upload .lua or .txt file")
 async def add_script(interaction: discord.Interaction, file: discord.Attachment):
     if not interaction.user.guild_permissions.administrator:
@@ -216,7 +212,7 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment)
     
     panel = load_json(PANEL_FILE)
     if not panel or "channel_id" not in panel:
-        return await interaction.response.send_message("⚠️ No panel found. Create one first with `/create panel`.", ephemeral=True)
+        return await interaction.response.send_message("⚠️ No panel found. Create one first with `/create-panel`.", ephemeral=True)
     
     if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
         return await interaction.response.send_message("❌ Only .lua or .txt files accepted.", ephemeral=True)
