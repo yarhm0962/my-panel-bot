@@ -13,6 +13,9 @@ import traceback
 TOKEN = os.getenv("TOKEN")
 WEBSITE_DOMAIN = os.getenv("WEBSITE_DOMAIN", "my-panel-bot.onrender.com")
 
+# Remove any http:// or https:// prefix
+WEBSITE_DOMAIN = WEBSITE_DOMAIN.replace("http://", "").replace("https://", "")
+
 if not TOKEN:
     print("ERROR: TOKEN environment variable not set.")
     sys.exit(1)
@@ -83,17 +86,17 @@ local function b64decode(data)
     local result = {{}}
     for i = 1, #data, 4 do
         local chunk = data:sub(i, i+3)
-        local a, b2, c, d = chunk:byte(1, 4)
-        local x = ((a or 0) - 1) % 65
-        local y = ((b2 or 0) - 1) % 65
-        local z = ((c or 0) - 1) % 65
-        local w = ((d or 0) - 1) % 65
-        local n = (x * 4) + math.floor(y / 16)
+        local a, c, d, e = chunk:byte(1, 4)
+        local x = b:find(string.char(a)) - 1 if a else 0
+        local y = b:find(string.char(c)) - 1 if c else 0
+        local z = b:find(string.char(d)) - 1 if d else 0
+        local w = b:find(string.char(e)) - 1 if e else 0
+        local n1 = (x * 4) + math.floor(y / 16)
         local n2 = ((y % 16) * 16) + math.floor(z / 4)
         local n3 = ((z % 4) * 64) + w
-        table.insert(result, string.char(n))
-        if c then table.insert(result, string.char(n2)) end
-        if d then table.insert(result, string.char(n3)) end
+        table.insert(result, string.char(n1))
+        if c and c ~= 61 then table.insert(result, string.char(n2)) end
+        if d and d ~= 61 then table.insert(result, string.char(n3)) end
     end
     return table.concat(result)
 end
