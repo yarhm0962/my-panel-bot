@@ -50,11 +50,11 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
-def obfuscate_with_xfu5k470r(lua_code, user_key=""):
-    # Updated kick message
-    key_check = f'''
+def obfuscate_with_xfu5k470r(lua_code):
+    # Key check: only requires SCRIPT_KEY to be set (not empty)
+    key_check = '''
 getgenv().SCRIPT_KEY = getgenv().SCRIPT_KEY or nil
-if not getgenv().SCRIPT_KEY or getgenv().SCRIPT_KEY == "" or getgenv().SCRIPT_KEY ~= "{user_key}" then
+if not getgenv().SCRIPT_KEY or getgenv().SCRIPT_KEY == "" then
     game:GetService("Players").LocalPlayer:Kick('Pls Put Your getgenv().SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
     return
 end
@@ -375,10 +375,13 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment)
     content = await file.read()
     lua_code = content.decode("utf-8")
     
+    # --- FIX: Obfuscate the script before saving ---
+    obfuscated_code = obfuscate_with_xfu5k470r(lua_code)
+    
     script_id = generate_script_id()
     
     scripts = load_json(SCRIPTS_FILE)
-    scripts[script_id] = lua_code
+    scripts[script_id] = obfuscated_code   # Save obfuscated version
     save_json(SCRIPTS_FILE, scripts)
     
     panel["script_id"] = script_id
