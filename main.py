@@ -61,7 +61,7 @@ end
 '''
     full_code = key_check + "\n" + lua_code
     
-    # Obfuscator as a RAW string (r"""...""") to preserve backslashes
+    # Corrected obfuscator as a raw string (fixed syntax errors)
     obfuscator = r'''
 function obfuscate(code, level, mxLevel)
     local function print(...) end
@@ -74,15 +74,21 @@ function obfuscate(code, level, mxLevel)
     code = code:gsub("(%-%-%[(=*)%[.-%]%2%])", "")
     code = code:gsub("(%-%-[^\r\n]*)", "")
     
-    local function dumpString(x) return concat("\\"", x:gsub(".", function(d) return "\\" .. string.byte(d) end), "\\"") end end
+    -- Fixed: removed extra 'end'
+    local function dumpString(x) 
+        return concat("\"", x:gsub(".", function(d) return "\\" .. string.byte(d) end), "\"") 
+    end
+    
+    -- Fixed: removed extra 'end'
     local function dumpString2(x) 
-        local x2 = "\\""
+        local x2 = "\""
         local x3 = ""
         for _,__ in x:gmatch("%[(=*)%[(.-)%]%1%]") do
             x3 = __:gsub(".", function(d) return "\\" .. string.byte(d) end)
         end
         return concat(x2, x3, x2)
-    end end
+    end
+    
     local function GenerateSomeFluff()
         local randomTable = { "N00BING N00B TABLE", "game.Workspace:ClearAllChildren()", "?????????", "game", "Workspace", "wait", "loadstring", "Lighting", "TeleportService", "error", "crash__", "_", "____", "\\\\FOOLED YA?!?!\\", "\\\\MWAHAHA H4X0RZ\\", "string", "table", "\\\\KR3D17 70 XFU5K470R\\", "string", "os", "tick", "\system\"" }
         local x = math.random(1, #randomTable)
@@ -377,7 +383,6 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment)
         content = await file.read()
         lua_code = content.decode("utf-8")
         
-        # --- Obfuscate the script ---
         obfuscated_code = obfuscate_with_xfu5k470r(lua_code)
         
         script_id = generate_script_id()
