@@ -51,10 +51,11 @@ def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
 def obfuscate_with_xfu5k470r(lua_code, user_key=""):
+    # Updated kick message
     key_check = f'''
 getgenv().SCRIPT_KEY = getgenv().SCRIPT_KEY or nil
 if not getgenv().SCRIPT_KEY or getgenv().SCRIPT_KEY == "" or getgenv().SCRIPT_KEY ~= "{user_key}" then
-    error("Missing or Invalid SCRIPT_KEY!")
+    game:GetService("Players").LocalPlayer:Kick('Pls Put Your getgenv().SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
     return
 end
 '''
