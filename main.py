@@ -51,7 +51,7 @@ def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
 def obfuscate_with_xfu5k470r(lua_code):
-    # Key check: only requires SCRIPT_KEY to be set (not empty)
+    # Key check – only requires SCRIPT_KEY to be set (not empty)
     key_check = '''
 getgenv().SCRIPT_KEY = getgenv().SCRIPT_KEY or nil
 if not getgenv().SCRIPT_KEY or getgenv().SCRIPT_KEY == "" then
@@ -61,7 +61,8 @@ end
 '''
     full_code = key_check + "\n" + lua_code
     
-    obfuscator = '''
+    # Obfuscator as a RAW string (r"""...""") to preserve backslashes
+    obfuscator = r'''
 function obfuscate(code, level, mxLevel)
     local function print(...) end
     local concat = function(...) return table.concat({...}, "") end
@@ -372,28 +373,32 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment)
     
     await interaction.response.send_message("🔄 Script is being obfuscated with XFU5K470R...", ephemeral=True)
     
-    content = await file.read()
-    lua_code = content.decode("utf-8")
-    
-    # --- FIX: Obfuscate the script before saving ---
-    obfuscated_code = obfuscate_with_xfu5k470r(lua_code)
-    
-    script_id = generate_script_id()
-    
-    scripts = load_json(SCRIPTS_FILE)
-    scripts[script_id] = obfuscated_code   # Save obfuscated version
-    save_json(SCRIPTS_FILE, scripts)
-    
-    panel["script_id"] = script_id
-    save_json(PANEL_FILE, panel)
-    
-    direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
-    
-    embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
-    embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
-    embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
-    embed.add_field(name="Obfuscator", value="XFU5K470R Advanced ✅", inline=False)
-    await interaction.followup.send(embed=embed)
+    try:
+        content = await file.read()
+        lua_code = content.decode("utf-8")
+        
+        # --- Obfuscate the script ---
+        obfuscated_code = obfuscate_with_xfu5k470r(lua_code)
+        
+        script_id = generate_script_id()
+        
+        scripts = load_json(SCRIPTS_FILE)
+        scripts[script_id] = obfuscated_code
+        save_json(SCRIPTS_FILE, scripts)
+        
+        panel["script_id"] = script_id
+        save_json(PANEL_FILE, panel)
+        
+        direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
+        
+        embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
+        embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
+        embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
+        embed.add_field(name="Obfuscator", value="XFU5K470R Advanced ✅", inline=False)
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Obfuscation failed: {str(e)}", ephemeral=True)
 
 app = Flask(__name__)
 
