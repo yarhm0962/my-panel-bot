@@ -64,13 +64,24 @@ end
 local key = getgenv().SCRIPT_KEY
 
 local function b64decode(data)
-    local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = string.gsub(data, '[^'..b..'=]', '')
-    return (string.gsub(data, '.(.)?.?(.)?', function(x,y,z)
-        if not y then return '' end
-        local a,b,c = b:find(x)-1, b:find(y)-1, z and b:find(z)-1 or 0
-        return string.char((a*4 + math.floor(b/16)) % 256, (b%16*16 + math.floor(c/4)) % 256, (c%4*64 + d) % 256)
-    end))
+    local result = {}
+    for i = 1, #data, 4 do
+        local chunk = data:sub(i, i+3)
+        local a, b2, c, d = chunk:byte(1, 4)
+        local x = ((a or 0) - 1) % 65
+        local y = ((b2 or 0) - 1) % 65
+        local z = ((c or 0) - 1) % 65
+        local w = ((d or 0) - 1) % 65
+        local n = (x * 4) + math.floor(y / 16)
+        local n2 = ((y % 16) * 16) + math.floor(z / 4)
+        local n3 = ((z % 4) * 64) + w
+        table.insert(result, string.char(n))
+        if c then table.insert(result, string.char(n2)) end
+        if d then table.insert(result, string.char(n3)) end
+    end
+    return table.concat(result)
 end
 
 local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key
@@ -85,7 +96,12 @@ if not success or not response.valid then
 end
 
 local decoded = b64decode("{encoded}")
-loadstring(decoded)()
+local fn = loadstring(decoded)
+if not fn then
+    game:GetService("Players").LocalPlayer:Kick('Failed to load script: invalid code')
+    return
+end
+fn()
 '''
     return wrapper
 
@@ -240,6 +256,38 @@ async def view_all_keys(interaction: discord.Interaction):
     await interaction.response.send_message(f"**All Keys:**\n{chunks[0]}", ephemeral=True)
     for chunk in chunks[1:]:
         await interaction.followup.send(chunk, ephemeral=True)
+
+@client.tree.command(name="delete-keys", description="Delete one or more keys (Admin only)")
+@app_commands.describe(key="Specific key to delete", user="Delete all keys for this user")
+async def delete_keys(interaction: discord.Interaction, key: str = None, user: discord.User = None):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("No permission.", ephemeral=True)
+
+    if not key and not user:
+        return await interaction.response.send_message("You must specify either a key or a user.", ephemeral=True)
+
+    keys = load_json(KEYS_FILE)
+    if not keys:
+        return await interaction.response.send_message("No keys exist.", ephemeral=True)
+
+    deleted_count = 0
+    if key:
+        if key in keys:
+            del keys[key]
+            deleted_count = 1
+        else:
+            return await interaction.response.send_message(f"Key `{key}` not found.", ephemeral=True)
+    elif user:
+        uid = str(user.id)
+        to_delete = [k for k, v in keys.items() if v.get("owner") == uid]
+        if not to_delete:
+            return await interaction.response.send_message(f"No keys found for user {user.mention}.", ephemeral=True)
+        for k in to_delete:
+            del keys[k]
+        deleted_count = len(to_delete)
+
+    save_json(KEYS_FILE, keys)
+    await interaction.response.send_message(f"✅ Deleted {deleted_count} key(s).", ephemeral=True)
 
 @client.tree.command(name="add-script", description="Add Lua script file (Admin only)")
 @app_commands.describe(file="Upload .lua or .txt file")
