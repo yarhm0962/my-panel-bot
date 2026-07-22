@@ -4,10 +4,11 @@ import json
 import random
 import os
 from datetime import datetime, timedelta
-from flask import Flask
+from flask import Flask, Response
 import threading
 
 TOKEN = os.getenv("TOKEN")
+WEBSITE_DOMAIN = "https://my-panel-bot.onrender.com"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -26,6 +27,7 @@ client = MyBot()
 KEYS_FILE = "keys.json"
 USERS_FILE = "users.json"
 PANEL_FILE = "panel.json"
+SCRIPTS_FILE = "scripts.json"
 
 def load_json(filename):
     try:
@@ -45,7 +47,10 @@ def generate_user_key():
         parts.append(part)
     return "-".join(parts)
 
-def obfuscate_script(your_lua_code, user_key):
+def generate_script_id():
+    return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
+
+def obfuscate_script(your_lua_code):
     obfuscator_key = random.randint(100000, 999999)
     key_str = str(obfuscator_key)
     hex_result = ""
@@ -69,22 +74,28 @@ end
 
 local function CheckKey()
     local key = getgenv().SCRIPT_KEY
-    if not key or key == nil then
+    if not key or key == nil or key == "" then
         return false
     end
-    if key ~= "{user_key}" then
+    local CORRECT_KEY = "REPLACE_WITH_USER_KEY"
+    if key ~= CORRECT_KEY then
         return false
     end
     return true
 end
 
-if not CheckKey() then return end
+if not CheckKey() then
+    error("Missing or Invalid SCRIPT_KEY!")
+    return
+end
 
 local ENC = "{hex_result}"
 local KEY = {obfuscator_key}
 local OK, CODE = pcall(Decrypt, ENC, KEY)
 if OK then
     loadstring(CODE)()
+else
+    error("Decryption Failed!")
 end
 '''
     return protected_script, obfuscator_key
@@ -131,14 +142,20 @@ class PanelView(discord.ui.View):
         users = load_json(USERS_FILE)
         panel = load_json(PANEL_FILE)
         uid = str(interaction.user.id)
+        
         if uid not in users:
             return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
-        if "script_link" not in panel or not panel["script_link"]:
+        if "script_id" not in panel or not panel["script_id"]:
             return await interaction.response.send_message("⚠️ No script has been added yet.", ephemeral=True)
+        
         user_key = users[uid]["key"]
-        loadstring_code = f'loadstring(game:HttpGet("{panel["script_link"]}"))()\ngetgenv().SCRIPT_KEY = "{user_key}"'
+        script_url = f"https://{WEBSITE_DOMAIN}/{panel['script_id']}"
+        
+        loadstring_code = f'getgenv().SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
+        
         embed = discord.Embed(title="📜 Your Loadstring", color=discord.Color.green())
-        embed.add_field(name="Copy this:", value=f"```lua\n{loadstring_code}\n```", inline=False)
+        embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
+        embed.set_footer(text="SCRIPT_KEY is REQUIRED — script will NOT work without it!")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Get Role", emoji="🎖️", style=discord.ButtonStyle.grey, custom_id="role_btn")
@@ -159,7 +176,7 @@ async def on_ready():
     print(f"Bot Online: {client.user}")
     client.add_view(PanelView())
 
-@client.tree.command(name="create-panel", description="Create control panel")
+@client.tree.command(name="create panel", description="Create control panel")
 @app_commands.describe(script_title="Embed title", description="Embed description (optional)")
 async def create_panel(interaction: discord.Interaction, script_title: str, description: str = None):
     if not interaction.user.guild_permissions.administrator:
@@ -191,7 +208,7 @@ async def genkey(interaction: discord.Interaction, days: int):
     save_json(KEYS_FILE, keys)
     await interaction.response.send_message(f"✅ Key Generated:\n`{user_key}`\nValid: {days} days", ephemeral=True)
 
-@client.tree.command(name="add-script", description="Add Lua script file (Admin only)")
+@client.tree.command(name="add script", description="Add Lua script file (Admin only)")
 @app_commands.describe(file="Upload .lua or .txt file")
 async def add_script(interaction: discord.Interaction, file: discord.Attachment):
     if not interaction.user.guild_permissions.administrator:
@@ -199,7 +216,7 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment)
     
     panel = load_json(PANEL_FILE)
     if not panel or "channel_id" not in panel:
-        return await interaction.response.send_message("⚠️ No panel found. Create one first with `/create-panel`.", ephemeral=True)
+        return await interaction.response.send_message("⚠️ No panel found. Create one first with `/create panel`.", ephemeral=True)
     
     if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
         return await interaction.response.send_message("❌ Only .lua or .txt files accepted.", ephemeral=True)
@@ -209,44 +226,36 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment)
     content = await file.read()
     lua_code = content.decode("utf-8")
     
-    all_keys = load_json(KEYS_FILE)
-    first_key = None
-    for k, v in all_keys.items():
-        if v["active"]:
-            first_key = k
-            break
-    if not first_key:
-        return await interaction.followup.send("❌ No active keys found. Generate a key first.", ephemeral=True)
+    protected, obf_key = obfuscate_script(lua_code)
+    script_id = generate_script_id()
     
-    protected, obf_key = obfuscate_script(lua_code, first_key)
+    scripts = load_json(SCRIPTS_FILE)
+    scripts[script_id] = protected
+    save_json(SCRIPTS_FILE, scripts)
     
-    with open("protected_script.lua", "w", encoding="utf-8") as f:
-        f.write(protected)
-    
-    panel["script_link"] = "UPLOAD_THIS_FILE_TO_GET_LINK"
+    panel["script_id"] = script_id
     save_json(PANEL_FILE, panel)
     
+    direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
+    
     embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
+    embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
+    embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
     embed.add_field(name="Obfuscator Key", value=f"`{obf_key}`", inline=False)
-    embed.add_field(name="Status", value="Ready ✅", inline=True)
-    await interaction.followup.send(embed=embed, file=discord.File("protected_script.lua"))
-
-@client.tree.command(name="panel", description="Your personal panel")
-async def panel_cmd(interaction: discord.Interaction):
-    users = load_json(USERS_FILE)
-    uid = str(interaction.user.id)
-    if uid not in users:
-        return await interaction.response.send_message("❌ Redeem your key first using the button on the panel.", ephemeral=True)
-    panel = load_json(PANEL_FILE)
-    embed = discord.Embed(title="🎛️ M1rage Control Panel", color=discord.Color.blue())
-    embed.add_field(name="Your Key", value=f"`{users[uid]['key']}`", inline=False)
-    embed.add_field(name="Script Status", value="✅ Ready" if "script_link" in panel else "⚠️ No script yet", inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed)
 
 app = Flask(__name__)
+
+@app.route("/<script_id>")
+def get_script(script_id):
+    scripts = load_json(SCRIPTS_FILE)
+    if script_id in scripts:
+        return Response(scripts[script_id], mimetype="text/plain")
+    return "Script Not Found", 404
+
 @app.route("/")
 def home():
-    return "Bot Online"
+    return "M1rage Lua Service Online"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
