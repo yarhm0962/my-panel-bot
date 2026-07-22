@@ -11,8 +11,17 @@ TOKEN = os.getenv("TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
-client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
+
+class MyBot(discord.Client):
+    def __init__(self):
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+
+    async def setup_hook(self):
+        await self.tree.sync()
+        print("Commands Synced")
+
+client = MyBot()
 
 KEYS_FILE = "keys.json"
 USERS_FILE = "users.json"
@@ -86,52 +95,52 @@ class PanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Redeem Key", emoji="🔑", style=discord.ButtonStyle.Green, custom_id="redeem_btn")
+    @discord.ui.button(label="Redeem Key", emoji="🔑", style=discord.ButtonStyle.green, custom_id="redeem_btn")
     async def redeem_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Use `/redeem YOUR_KEY` command to redeem your key.", ephemeral=True)
+        await interaction.response.send_message("Use `/redeem YOUR_KEY` command to redeem.", ephemeral=True)
 
-    @discord.ui.button(label="Get Loadstring", emoji="📜", style=discord.ButtonStyle.Blurple, custom_id="loadstring_btn")
+    @discord.ui.button(label="Get Loadstring", emoji="📜", style=discord.ButtonStyle.blurple, custom_id="loadstring_btn")
     async def loadstring_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         users = load_json(USERS_FILE)
         uid = str(interaction.user.id)
         if uid not in users:
-            return await interaction.response.send_message("❌ Redeem your key first using `/redeem`.", ephemeral=True)
+            return await interaction.response.send_message("Redeem key first with `/redeem`.", ephemeral=True)
         user_key = users[uid]["key"]
         loadstring_code = f'loadstring(game:HttpGet("YOUR_HOSTED_LINK_HERE"))()\ngetgenv().SCRIPT_KEY = "{user_key}"'
         embed = discord.Embed(title="📜 Your Loadstring", color=discord.Color.green())
         embed.add_field(name="Copy this:", value=f"```lua\n{loadstring_code}\n```", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Get Role", emoji="🎖️", style=discord.ButtonStyle.Grey, custom_id="role_btn")
+    @discord.ui.button(label="Get Role", emoji="🎖️", style=discord.ButtonStyle.grey, custom_id="role_btn")
     async def role_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         users = load_json(USERS_FILE)
         uid = str(interaction.user.id)
         if uid not in users:
-            return await interaction.response.send_message("❌ Redeem your key first using `/redeem`.", ephemeral=True)
+            return await interaction.response.send_message("Redeem key first with `/redeem`.", ephemeral=True)
         role = discord.utils.get(interaction.guild.roles, name="Verified User")
         if role:
             await interaction.user.add_roles(role)
-            await interaction.response.send_message("✅ Role assigned successfully!", ephemeral=True)
+            await interaction.response.send_message("Role assigned!", ephemeral=True)
         else:
-            await interaction.response.send_message("⚠️ Role not found. Ask an admin to create it.", ephemeral=True)
+            await interaction.response.send_message("Role 'Verified User' not found.", ephemeral=True)
 
 @client.event
 async def on_ready():
-    await tree.sync()
+    print(f"Bot Online: {client.user}")
     client.add_view(PanelView())
 
-@tree.command(name="create-panel", description="Create control panel embed (Admin only)")
+@client.tree.command(name="create-panel", description="Create control panel")
 @app_commands.describe(script_title="Embed title", description="Embed description")
-async def create_panel_cmd(interaction: discord.Interaction, script_title: str, description: str):
+async def create_panel(interaction: discord.Interaction, script_title: str, description: str):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("No permission.", ephemeral=True)
     embed = discord.Embed(title=script_title, description=description, color=discord.Color.blue())
     embed.set_footer(text="M1rage Control Panel")
     await interaction.response.send_message(embed=embed, view=PanelView())
 
-@tree.command(name="genkey", description="Generate new key (Admin only)")
+@client.tree.command(name="genkey", description="Generate new key")
 @app_commands.describe(days="Days active")
-async def genkey_cmd(interaction: discord.Interaction, days: int):
+async def genkey(interaction: discord.Interaction, days: int):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("No permission.", ephemeral=True)
     user_key = generate_user_key()
@@ -139,34 +148,34 @@ async def genkey_cmd(interaction: discord.Interaction, days: int):
     expires = (datetime.utcnow() + timedelta(days=days)).isoformat()
     keys[user_key] = {"active": True, "expires": expires, "owner": str(interaction.user.id)}
     save_json(KEYS_FILE, keys)
-    await interaction.response.send_message(f"✅ Key Generated:\n`{user_key}`\nValid: {days} days", ephemeral=True)
+    await interaction.response.send_message(f"Key: `{user_key}`\nValid: {days} days", ephemeral=True)
 
-@tree.command(name="redeem", description="Redeem your key")
+@client.tree.command(name="redeem", description="Redeem your key")
 @app_commands.describe(key="Your key")
-async def redeem_cmd(interaction: discord.Interaction, key: str):
+async def redeem(interaction: discord.Interaction, key: str):
     keys = load_json(KEYS_FILE)
     users = load_json(USERS_FILE)
     uid = str(interaction.user.id)
     if key not in keys or not keys[key]["active"]:
-        return await interaction.response.send_message("❌ Invalid or expired key.", ephemeral=True)
+        return await interaction.response.send_message("Invalid key.", ephemeral=True)
     users[uid] = {"key": key, "redeemed": datetime.utcnow().isoformat()}
     save_json(USERS_FILE, users)
-    embed = discord.Embed(title="✅ Key Redeemed!", color=discord.Color.green())
+    embed = discord.Embed(title="Key Redeemed!", color=discord.Color.green())
     embed.add_field(name="Your Key", value=f"`{key}`", inline=False)
-    embed.add_field(name="Status", value="Active ✅", inline=True)
+    embed.add_field(name="Status", value="Active", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@tree.command(name="protect", description="Protect script with key system (Admin only)")
-@app_commands.describe(script="Your Lua script", user_key="User's key")
-async def protect_cmd(interaction: discord.Interaction, script: str, user_key: str):
+@client.tree.command(name="protect", description="Protect script")
+@app_commands.describe(script="Lua script", user_key="User key")
+async def protect(interaction: discord.Interaction, script: str, user_key: str):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("No permission.", ephemeral=True)
     await interaction.response.defer()
     keys = load_json(KEYS_FILE)
     if user_key not in keys or not keys[user_key]["active"]:
-        return await interaction.followup.send("❌ Invalid or inactive key.", ephemeral=True)
+        return await interaction.followup.send("Invalid key.", ephemeral=True)
     protected, obfuscator_key = build_protected_loadstring(script, user_key)
-    embed = discord.Embed(title="🔐 Script Protected", color=discord.Color.blue())
+    embed = discord.Embed(title="Script Protected", color=discord.Color.blue())
     embed.add_field(name="User Key", value=f"`{user_key}`", inline=False)
     embed.add_field(name="Obfuscator Key", value=f"`{obfuscator_key}`", inline=False)
     if len(protected) > 1900:
@@ -177,16 +186,15 @@ async def protect_cmd(interaction: discord.Interaction, script: str, user_key: s
         await interaction.followup.send(embed=embed)
         await interaction.followup.send(f"```lua\n{protected}\n```")
 
-@tree.command(name="panel", description="View your personal panel")
-async def panel_cmd(interaction: discord.Interaction):
+@client.tree.command(name="panel", description="Your panel")
+async def panel(interaction: discord.Interaction):
     users = load_json(USERS_FILE)
     uid = str(interaction.user.id)
     if uid not in users:
-        return await interaction.response.send_message("❌ Redeem your key first using `/redeem`.", ephemeral=True)
-    embed = discord.Embed(title="🎛️ M1rage Control Panel", color=discord.Color.blue())
+        return await interaction.response.send_message("Redeem key first.", ephemeral=True)
+    embed = discord.Embed(title="M1rage Control Panel", color=discord.Color.blue())
     embed.add_field(name="Your Key", value=f"`{users[uid]['key']}`", inline=False)
-    embed.add_field(name="Status", value="✅ Active", inline=True)
-    embed.add_field(name="How To Use", value="```lua\ngetgenv().SCRIPT_KEY = \"YOUR_KEY\"\nloadstring(\"LINK\")()\n```", inline=False)
+    embed.add_field(name="Status", value="Active", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 app = Flask(__name__)
