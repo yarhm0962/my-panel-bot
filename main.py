@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timedelta
 from flask import Flask, Response
 import threading
+import base64
 
 TOKEN = os.getenv("TOKEN")
 WEBSITE_DOMAIN = "my-panel-bot.onrender.com"
@@ -50,8 +51,44 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
+# ---------- FALLBACK OBFUSCATOR (Base64) ----------
+def obfuscate_fallback(lua_code):
+    """Simple but effective: Base64 encode + key check."""
+    key_check = '''
+getgenv().SCRIPT_KEY = getgenv().SCRIPT_KEY or nil
+if not getgenv().SCRIPT_KEY or getgenv().SCRIPT_KEY == "" then
+    game:GetService("Players").LocalPlayer:Kick('Pls Put Your getgenv().SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
+    return
+end
+'''
+    encoded = base64.b64encode(lua_code.encode()).decode()
+    loader = f'''
+{key_check}
+local code = (function(s) return loadstring(game:HttpGet("https://pastebin.com/raw/" .. s)) end)("{encoded}")  -- just placeholder, we'll embed
+-- Actually we embed the base64 directly:
+local decoded = game:GetService("HttpService"):Base64Decode("{encoded}")
+loadstring(decoded)()
+'''
+    # Better: we can just do loadstring(base64.decode(...)) but Roblox doesn't have base64 built-in.
+    # So we'll use a simple custom decoder.
+    decoder = f'''
+{key_check}
+local function b64decode(data)
+    local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    data = string.gsub(data, '[^'..b..'=]', '')
+    return (string.gsub(data, '.(.)?.?(.)?', function(x,y,z)
+        if not y then return '' end
+        local a,b,c,d = b:find(x)-1, b:find(y)-1, z and b:find(z)-1 or 0
+        return string.char((a*4 + math.floor(b/16)) % 256, (b%16*16 + math.floor(c/4)) % 256, (c%4*64 + d) % 256)
+    end))
+end
+local decoded = b64decode("{encoded}")
+loadstring(decoded)()
+'''
+    return decoder
+
+# ---------- MAIN OBFUSCATOR (XFU5K470R) ----------
 def obfuscate_with_xfu5k470r(lua_code):
-    # Key check – only requires SCRIPT_KEY to be set (not empty)
     key_check = '''
 getgenv().SCRIPT_KEY = getgenv().SCRIPT_KEY or nil
 if not getgenv().SCRIPT_KEY or getgenv().SCRIPT_KEY == "" then
@@ -61,7 +98,6 @@ end
 '''
     full_code = key_check + "\n" + lua_code
     
-    # Corrected obfuscator as a raw string (fixed syntax errors)
     obfuscator = r'''
 function obfuscate(code, level, mxLevel)
     local function print(...) end
@@ -74,12 +110,10 @@ function obfuscate(code, level, mxLevel)
     code = code:gsub("(%-%-%[(=*)%[.-%]%2%])", "")
     code = code:gsub("(%-%-[^\r\n]*)", "")
     
-    -- Fixed: removed extra 'end'
     local function dumpString(x) 
         return concat("\"", x:gsub(".", function(d) return "\\" .. string.byte(d) end), "\"") 
     end
     
-    -- Fixed: removed extra 'end'
     local function dumpString2(x) 
         local x2 = "\""
         local x3 = ""
@@ -90,11 +124,34 @@ function obfuscate(code, level, mxLevel)
     end
     
     local function GenerateSomeFluff()
-        local randomTable = { "N00BING N00B TABLE", "game.Workspace:ClearAllChildren()", "?????????", "game", "Workspace", "wait", "loadstring", "Lighting", "TeleportService", "error", "crash__", "_", "____", "\\\\FOOLED YA?!?!\\", "\\\\MWAHAHA H4X0RZ\\", "string", "table", "\\\\KR3D17 70 XFU5K470R\\", "string", "os", "tick", "\system\"" }
+        local randomTable = { 
+            "N00BING N00B TABLE", 
+            "game.Workspace:ClearAllChildren()", 
+            "?????????", 
+            "game", 
+            "Workspace", 
+            "wait", 
+            "loadstring", 
+            "Lighting", 
+            "TeleportService", 
+            "error", 
+            "crash__", 
+            "_", 
+            "____", 
+            "FOOLED YA?!?!", 
+            "MWAHAHA H4X0RZ", 
+            "string", 
+            "table", 
+            "KR3D17 70 XFU5K470R", 
+            "string", 
+            "os", 
+            "tick", 
+            "system" 
+        }
         local x = math.random(1, #randomTable)
         if x > (#randomTable / 2) then
             local randomName = randomTable[x]
-            return concat("local ", string.rep("_", math.random(5, 10)), " = ", "____[#____ - 9](", dumpString("loadstring(\\"return " .. randomName .. "\\")()"), ")\\n")
+            return concat("local ", string.rep("_", math.random(5, 10)), " = ", "____[#____ - 9](", dumpString("loadstring(return " .. randomName .. ")()"), ")\\n")
         elseif x > 3 then
             return concat("local ", string.rep("_", math.random(5, 10)), " = ____[", math.random(1, 31), "]\\n")
         else
@@ -175,7 +232,7 @@ function obfuscate(code, level, mxLevel)
             i = i + 1
         end
     end
-    a = a .. concat("[", i, "] = \\"\\88\\70\\85\\53\\75\\52\\55\\48\\82\\32\\49\\53\\32\\52\\87\\51\\53\\48\\77\\51\\46\\32\\75\\82\\51\\68\\49\\57\\32\\55\\48\\32\\88\\70\\85\\53\\75\\52\\55\\48\\82\\33\\"")
+    a = a .. concat("[", i, "] = \"XFU5K470R 15 4W350M3. KR3D19 70 XFU5K470R!\"")
     a = a .. " }\\n"
 
     if level == 1 then
@@ -253,9 +310,26 @@ return xfuscate
     import lupa
     lua = lupa.LuaRuntime(unpack_returned_tuples=True)
     obfuscator_func = lua.execute(obfuscator)
-    obfuscated_result = obfuscator_func(full_code)
-    return obfuscated_result
+    obfuscated = obfuscator_func(full_code)
+    return obfuscated
 
+# ---------- SMART OBFUSCATION WRAPPER ----------
+def obfuscate_script(lua_code):
+    """Try XFU5K470R, fallback to Base64 if it fails or doesn't change."""
+    try:
+        obfuscated = obfuscate_with_xfu5k470r(lua_code)
+        # Check if it actually changed
+        if obfuscated == lua_code or len(obfuscated) < len(lua_code) * 0.5:
+            print("XFU5K470R returned original or too short – using fallback.")
+            return obfuscate_fallback(lua_code)
+        else:
+            print("XFU5K470R obfuscation successful.")
+            return obfuscated
+    except Exception as e:
+        print(f"XFU5K470R crashed: {e} – using fallback.")
+        return obfuscate_fallback(lua_code)
+
+# ---------- DISCORD BOT COMMANDS ----------
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
         label="Key to Redeem",
@@ -377,13 +451,17 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment)
     if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
         return await interaction.response.send_message("❌ Only .lua or .txt files accepted.", ephemeral=True)
     
-    await interaction.response.send_message("🔄 Script is being obfuscated with XFU5K470R...", ephemeral=True)
+    await interaction.response.send_message("🔄 Obfuscating script...", ephemeral=True)
     
     try:
         content = await file.read()
         lua_code = content.decode("utf-8")
         
-        obfuscated_code = obfuscate_with_xfu5k470r(lua_code)
+        # Use the smart wrapper
+        obfuscated_code = obfuscate_script(lua_code)
+        
+        # Log a snippet to console for debugging
+        print(f"Obfuscated preview: {obfuscated_code[:200]}...")
         
         script_id = generate_script_id()
         
@@ -399,12 +477,13 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment)
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
         embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
-        embed.add_field(name="Obfuscator", value="XFU5K470R Advanced ✅", inline=False)
+        embed.add_field(name="Obfuscator", value="XFU5K470R Advanced ✅ (fallback: Base64)" if "XFU5K470R" in obfuscated_code else "Base64 (fallback)", inline=False)
         await interaction.followup.send(embed=embed)
         
     except Exception as e:
         await interaction.followup.send(f"❌ Obfuscation failed: {str(e)}", ephemeral=True)
 
+# ---------- FLASK SERVER ----------
 app = Flask(__name__)
 
 @app.route("/<script_id>")
