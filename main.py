@@ -11,6 +11,9 @@ import threading
 TOKEN = os.getenv("TOKEN")
 WEBSITE_DOMAIN = "my-panel-bot.onrender.com"
 
+if not TOKEN:
+    raise ValueError("TOKEN environment variable not set.")
+
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -364,4 +367,9 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-client.run(TOKEN)
+if __name__ == "__main__":
+    try:
+        client.run(TOKEN)
+    except Exception as e:
+        print(f"FATAL: {e}")
+        raise
