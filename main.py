@@ -80,7 +80,7 @@ local key = getgenv().SCRIPT_KEY
 local function b64decode(data)
     local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = string.gsub(data, '[^'..b..'=]', '')
-    local result = {}
+    local result = {{}}
     for i = 1, #data, 4 do
         local chunk = data:sub(i, i+3)
         local a, b2, c, d = chunk:byte(1, 4)
@@ -430,7 +430,6 @@ def run_flask():
         print(f"Flask error: {e}")
         traceback.print_exc()
 
-# Start Flask in a background thread
 threading.Thread(target=run_flask, daemon=True).start()
 
 if __name__ == "__main__":
