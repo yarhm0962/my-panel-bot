@@ -50,51 +50,203 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
-def obfuscate_script(your_lua_code):
-    obfuscator_key = random.randint(100000, 999999)
-    key_str = str(obfuscator_key)
-    hex_result = ""
-    for i, char in enumerate(your_lua_code):
-        k = ord(key_str[i % len(key_str)])
-        mixed = ord(char) ^ k
-        hex_result += f"{mixed:02x}"
-    
-    protected_script = f'''getgenv().SCRIPT_KEY = nil
-
-local function Decrypt(data, key)
-    local r = ""
-    key = tostring(key)
-    for i = 1, #data, 2 do
-        local n = tonumber("0x" .. data:sub(i, i + 1))
-        local k = string.byte(key, (((i - 1) // 2) % #key) + 1)
-        r = r .. string.char(n ~ k)
-    end
-    return r
-end
-
-local function CheckKey()
-    local key = getgenv().SCRIPT_KEY
-    if not key or key == nil or key == "" then
-        return false
-    end
-    return true
-end
-
-if not CheckKey() then
+def obfuscate_with_xfu5k470r(lua_code, user_key=""):
+    key_check = f'''
+getgenv().SCRIPT_KEY = getgenv().SCRIPT_KEY or nil
+if not getgenv().SCRIPT_KEY or getgenv().SCRIPT_KEY == "" or getgenv().SCRIPT_KEY ~= "{user_key}" then
     error("Missing or Invalid SCRIPT_KEY!")
     return
 end
-
-local ENC = "{hex_result}"
-local KEY = {obfuscator_key}
-local OK, CODE = pcall(Decrypt, ENC, KEY)
-if OK then
-    loadstring(CODE)()
-else
-    error("Decryption Failed!")
-end
 '''
-    return protected_script, obfuscator_key
+    full_code = key_check + "\n" + lua_code
+    
+    obfuscator = '''
+function obfuscate(code, level, mxLevel)
+    local function print(...) end
+    local concat = function(...) return table.concat({...}, "") end
+    math.randomseed(os and os.time() or tick())
+    level = level or 1
+    mxLevel = mxLevel or 3
+    
+    local a = ""
+    code = code:gsub("(%-%-%[(=*)%[.-%]%2%])", "")
+    code = code:gsub("(%-%-[^\r\n]*)", "")
+    
+    local function dumpString(x) return concat("\\"", x:gsub(".", function(d) return "\\" .. string.byte(d) end), "\\"") end end
+    local function dumpString2(x) 
+        local x2 = "\\""
+        local x3 = ""
+        for _,__ in x:gmatch("%[(=*)%[(.-)%]%1%]") do
+            x3 = __:gsub(".", function(d) return "\\" .. string.byte(d) end)
+        end
+        return concat(x2, x3, x2)
+    end end
+    local function GenerateSomeFluff()
+        local randomTable = { "N00BING N00B TABLE", "game.Workspace:ClearAllChildren()", "?????????", "game", "Workspace", "wait", "loadstring", "Lighting", "TeleportService", "error", "crash__", "_", "____", "\\\\FOOLED YA?!?!\\", "\\\\MWAHAHA H4X0RZ\\", "string", "table", "\\\\KR3D17 70 XFU5K470R\\", "string", "os", "tick", "\system\"" }
+        local x = math.random(1, #randomTable)
+        if x > (#randomTable / 2) then
+            local randomName = randomTable[x]
+            return concat("local ", string.rep("_", math.random(5, 10)), " = ", "____[#____ - 9](", dumpString("loadstring(\\"return " .. randomName .. "\\")()"), ")\\n")
+        elseif x > 3 then
+            return concat("local ", string.rep("_", math.random(5, 10)), " = ____[", math.random(1, 31), "]\\n")
+        else
+            return concat("local ", ("_"):rep(100), " = ", dumpString("XFU5K470R R00LZ"), "\\n")
+        end
+    end
+    local function GenerateFluff() return GenerateSomeFluff() end
+
+    a = a .. "local CONSTANT_POOL = { "
+    local CONSTANT_POOL = { }
+    local i = 0
+    local last = ""
+    local instr = false
+    local foundOne = true
+    while foundOne do
+        foundOne = false
+        for i2 = 1, code:len() do
+            local c = code:sub(i2, i2)
+            if c == "\\"" then
+                if code:sub(i2 - 1, i2 - 1) == "\\\\" then
+                    if instr then last = last .. "\\"" end
+                else
+                    instr = not instr
+                    if not instr then
+                        if not CONSTANT_POOL[last] then
+                            CONSTANT_POOL[last] = i
+                            a = a .. "[" .. i .. "]" .. " = " .. dumpString(last) .. ", "
+                            code = code:gsub("\\"" .. last .. "\\""", "(CONSTANT_POOL[" .. CONSTANT_POOL[last] .. "])")
+                            i = i + 1
+                        else
+                            code = code:gsub("\\"" .. last .. "\\""", "(CONSTANT_POOL[" .. CONSTANT_POOL[last] .. "])")
+                        end
+                        last = ""
+                        foundOne = true
+                        break
+                    end
+                end
+            else
+                if instr then last = last .. c end
+            end
+        end
+    end
+    local last = ""
+    local instr = false
+    local foundOne = true
+    while foundOne do
+        foundOne = false
+        for i2 = 1, code:len() do
+            local c = code:sub(i2, i2)
+            if c == "\\'" then
+                if code:sub(i2 - 1, i2 - 1) == "\\\\" then
+                    if instr then last = last .. "\\'" end
+                else
+                    instr = not instr
+                    if not instr then
+                        if not CONSTANT_POOL[last] then
+                            CONSTANT_POOL[last] = i
+                            a = a .. "[" .. i .. "]" .. " = " .. dumpString(last) .. ", "
+                            code = code:gsub("\\'" .. last .. "\\'", "(CONSTANT_POOL[" .. CONSTANT_POOL[last] .. "])")
+                            i = i + 1
+                        else
+                            code = code:gsub("\\'" .. last .. "\\'", "(CONSTANT_POOL[" .. CONSTANT_POOL[last] .. "])")
+                        end
+                        last = ""
+                        foundOne = true
+                        break
+                    end
+                end
+            else
+                if instr then last = last .. c end
+            end
+        end
+    end
+    for var in code:gmatch("(%[(=*)%[.*%]%2%])") do
+        if not CONSTANT_POOL[var] then
+            a = a .. "[" .. i .. "]" .. " = " .. dumpString2(var) .. ", "
+            CONSTANT_POOL[var] = i
+            i = i + 1
+        end
+    end
+    a = a .. concat("[", i, "] = \\"\\88\\70\\85\\53\\75\\52\\55\\48\\82\\32\\49\\53\\32\\52\\87\\51\\53\\48\\77\\51\\46\\32\\75\\82\\51\\68\\49\\57\\32\\55\\48\\32\\88\\70\\85\\53\\75\\52\\55\\48\\82\\33\\"")
+    a = a .. " }\\n"
+
+    if level == 1 then
+        local chars = "QWERTYUIOPASDFGHJKLZXCVBNMqwertyuioplkjhgfdsazxcvbnm_"
+        local chars2 = "QWERTYUIOPASDFGHJKLZXCVBNMqwertyuioplkjhgfdsazxcvbnm_1234567890"
+        local taken = { }
+        taken[""] = true
+        local function GetReplacement()
+            local s = ""
+            while taken[s] do
+                local n = math.random(1, #chars)
+                s = s .. chars:sub(n, n)
+                for i = 1, math.random(6,20) do
+                    local n = math.random(1, #chars2)
+                    s = s .. chars2:sub(n, n)
+                end
+            end
+            taken[s] = true
+            return s
+        end
+        local library = {}
+        for fType in code:gmatch("local%s*function%s*([%w_]+)%(") do
+            local replacement = GetReplacement()
+            if #fType > 5 then
+                library[fType] = replacement
+                code = code:gsub("function " .. fType, "function " .. replacement)
+            end
+        end
+        for fCall in code:gmatch("([%w_]+)%s*%(") do
+            if library[fCall] then code = code:gsub(fCall .. "%(", library[fCall] .. "%(") end
+        end
+        local function isKeyword(s)
+            local s2 = "and break do else elseif end false for function if in local nil not or repeat return then true until"
+            for w in s2:gmatch("(%w+)") do if w == s then return true end end
+            return false
+        end
+        for each in code:gmatch("local%s*([%w_]*)%s*=") do
+            if #each > 3 and not isKeyword(each) then
+                local varName = GetReplacement()
+                code = code:gsub("local%s+" .. each .. "%s*=", "local " .. varName .. " = ")
+            end
+        end
+    end
+    code = code:gsub("(%s+)", " ")
+    a = a .. code
+    math.randomseed(os and os.time() or tick())
+    local __X = math.random()
+    local a2 = [[ math.randomseed(]] .. __X .. [[)
+local ____
+____ = { function(...) local t = { ...} return ____[8](t) end, print, game, math.frexp, math.random(1, 1100), string.dump, string.sub, table.concat, wait, tick, loadstring, "t", function(x) local x2 = loadstring(x) if x2 then return ____[tonumber("5048")](function() x2() end) else return nil end end, "InsertService", 1234567890, getfenv, "", "wai", 7.2, pcall, math.pi, ""}
+]] .. GenerateFluff() .. [[local ___ = ____[5]
+]] .. GenerateFluff() .. [[local _ = function(x) return string.char(x / ___) end
+]] .. GenerateFluff() .. [[local __ = {]]
+    math.randomseed(__X)
+    local ___X = math.random(1, 1100)
+    local a3 = { }
+    for i = 1, a:len() do
+        table.insert(a3, concat("_(", (string.byte(a:sub(i, i)) * ___X), "), "))
+    end
+    a2 = a2 .. table.concat(a3, "")
+    a2 = a2 .. " } \\n"
+    a2 = a2 .. GenerateFluff()
+    a2 = a2 .. "return ____[11]((____[8](__)), ____[#____])()\\n"
+    if level < mxLevel then
+        return obfuscate(a2, level + 1, mxLevel)
+    else
+        a2 = a2:gsub("[\\n\\r\\t ]+", " ")
+        return a2
+    end
+end
+xfuscate = function(code) return obfuscate(code, 1, 2) end
+return xfuscate
+'''
+    
+    import lupa
+    lua = lupa.LuaRuntime(unpack_returned_tuples=True)
+    obfuscator_func = lua.execute(obfuscator)
+    obfuscated_result = obfuscator_func(full_code)
+    return obfuscated_result
 
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
@@ -217,16 +369,15 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment)
     if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
         return await interaction.response.send_message("❌ Only .lua or .txt files accepted.", ephemeral=True)
     
-    await interaction.response.send_message("🔄 Script is being obfuscated...", ephemeral=True)
+    await interaction.response.send_message("🔄 Script is being obfuscated with XFU5K470R...", ephemeral=True)
     
     content = await file.read()
     lua_code = content.decode("utf-8")
     
-    protected, obf_key = obfuscate_script(lua_code)
     script_id = generate_script_id()
     
     scripts = load_json(SCRIPTS_FILE)
-    scripts[script_id] = protected
+    scripts[script_id] = lua_code
     save_json(SCRIPTS_FILE, scripts)
     
     panel["script_id"] = script_id
@@ -237,7 +388,7 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment)
     embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
     embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
     embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
-    embed.add_field(name="Obfuscator Key", value=f"`{obf_key}`", inline=False)
+    embed.add_field(name="Obfuscator", value="XFU5K470R Advanced ✅", inline=False)
     await interaction.followup.send(embed=embed)
 
 app = Flask(__name__)
@@ -251,7 +402,7 @@ def get_script(script_id):
 
 @app.route("/")
 def home():
-    return "M1rage Lua Service Online"
+    return "M1rage Lua Service Online | XFU5K470R Obfuscator"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
