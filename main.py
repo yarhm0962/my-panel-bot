@@ -3,10 +3,10 @@ from discord import app_commands
 import json
 import random
 import os
-from datetime import datetime, timedelta
-from flask import Flask, Response
-import threading
 import base64
+from datetime import datetime, timedelta
+from flask import Flask, Response, request
+import threading
 
 TOKEN = os.getenv("TOKEN")
 WEBSITE_DOMAIN = "my-panel-bot.onrender.com"
@@ -39,7 +39,7 @@ def load_json(filename):
 
 def save_json(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f)
+        json.dump(data, f, indent=2)
 
 def generate_user_key():
     parts = []
@@ -51,285 +51,44 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
-# ---------- FALLBACK OBFUSCATOR (Base64) ----------
-def obfuscate_fallback(lua_code):
-    """Simple but effective: Base64 encode + key check."""
-    key_check = '''
+def obfuscate_script(lua_code):
+    encoded = base64.b64encode(lua_code.encode()).decode()
+
+    wrapper = f'''
 getgenv().SCRIPT_KEY = getgenv().SCRIPT_KEY or nil
 if not getgenv().SCRIPT_KEY or getgenv().SCRIPT_KEY == "" then
     game:GetService("Players").LocalPlayer:Kick('Pls Put Your getgenv().SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
     return
 end
-'''
-    encoded = base64.b64encode(lua_code.encode()).decode()
-    loader = f'''
-{key_check}
-local code = (function(s) return loadstring(game:HttpGet("https://pastebin.com/raw/" .. s)) end)("{encoded}")  -- just placeholder, we'll embed
--- Actually we embed the base64 directly:
-local decoded = game:GetService("HttpService"):Base64Decode("{encoded}")
-loadstring(decoded)()
-'''
-    # Better: we can just do loadstring(base64.decode(...)) but Roblox doesn't have base64 built-in.
-    # So we'll use a simple custom decoder.
-    decoder = f'''
-{key_check}
+
+local key = getgenv().SCRIPT_KEY
+
 local function b64decode(data)
     local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = string.gsub(data, '[^'..b..'=]', '')
     return (string.gsub(data, '.(.)?.?(.)?', function(x,y,z)
         if not y then return '' end
-        local a,b,c,d = b:find(x)-1, b:find(y)-1, z and b:find(z)-1 or 0
+        local a,b,c = b:find(x)-1, b:find(y)-1, z and b:find(z)-1 or 0
         return string.char((a*4 + math.floor(b/16)) % 256, (b%16*16 + math.floor(c/4)) % 256, (c%4*64 + d) % 256)
     end))
 end
+
+local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key
+local success, response = pcall(function()
+    return game:GetService("HttpService"):JSONDecode(game:HttpGet(url))
+end)
+
+if not success or not response.valid then
+    local msg = response and response.reason or "Key validation failed"
+    game:GetService("Players").LocalPlayer:Kick('Invalid or expired key: ' .. msg)
+    return
+end
+
 local decoded = b64decode("{encoded}")
 loadstring(decoded)()
 '''
-    return decoder
+    return wrapper
 
-# ---------- MAIN OBFUSCATOR (XFU5K470R) ----------
-def obfuscate_with_xfu5k470r(lua_code):
-    key_check = '''
-getgenv().SCRIPT_KEY = getgenv().SCRIPT_KEY or nil
-if not getgenv().SCRIPT_KEY or getgenv().SCRIPT_KEY == "" then
-    game:GetService("Players").LocalPlayer:Kick('Pls Put Your getgenv().SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
-    return
-end
-'''
-    full_code = key_check + "\n" + lua_code
-    
-    obfuscator = r'''
-function obfuscate(code, level, mxLevel)
-    local function print(...) end
-    local concat = function(...) return table.concat({...}, "") end
-    math.randomseed(os and os.time() or tick())
-    level = level or 1
-    mxLevel = mxLevel or 3
-    
-    local a = ""
-    code = code:gsub("(%-%-%[(=*)%[.-%]%2%])", "")
-    code = code:gsub("(%-%-[^\r\n]*)", "")
-    
-    local function dumpString(x) 
-        return concat("\"", x:gsub(".", function(d) return "\\" .. string.byte(d) end), "\"") 
-    end
-    
-    local function dumpString2(x) 
-        local x2 = "\""
-        local x3 = ""
-        for _,__ in x:gmatch("%[(=*)%[(.-)%]%1%]") do
-            x3 = __:gsub(".", function(d) return "\\" .. string.byte(d) end)
-        end
-        return concat(x2, x3, x2)
-    end
-    
-    local function GenerateSomeFluff()
-        local randomTable = { 
-            "N00BING N00B TABLE", 
-            "game.Workspace:ClearAllChildren()", 
-            "?????????", 
-            "game", 
-            "Workspace", 
-            "wait", 
-            "loadstring", 
-            "Lighting", 
-            "TeleportService", 
-            "error", 
-            "crash__", 
-            "_", 
-            "____", 
-            "FOOLED YA?!?!", 
-            "MWAHAHA H4X0RZ", 
-            "string", 
-            "table", 
-            "KR3D17 70 XFU5K470R", 
-            "string", 
-            "os", 
-            "tick", 
-            "system" 
-        }
-        local x = math.random(1, #randomTable)
-        if x > (#randomTable / 2) then
-            local randomName = randomTable[x]
-            return concat("local ", string.rep("_", math.random(5, 10)), " = ", "____[#____ - 9](", dumpString("loadstring(return " .. randomName .. ")()"), ")\\n")
-        elseif x > 3 then
-            return concat("local ", string.rep("_", math.random(5, 10)), " = ____[", math.random(1, 31), "]\\n")
-        else
-            return concat("local ", ("_"):rep(100), " = ", dumpString("XFU5K470R R00LZ"), "\\n")
-        end
-    end
-    local function GenerateFluff() return GenerateSomeFluff() end
-
-    a = a .. "local CONSTANT_POOL = { "
-    local CONSTANT_POOL = { }
-    local i = 0
-    local last = ""
-    local instr = false
-    local foundOne = true
-    while foundOne do
-        foundOne = false
-        for i2 = 1, code:len() do
-            local c = code:sub(i2, i2)
-            if c == "\\"" then
-                if code:sub(i2 - 1, i2 - 1) == "\\\\" then
-                    if instr then last = last .. "\\"" end
-                else
-                    instr = not instr
-                    if not instr then
-                        if not CONSTANT_POOL[last] then
-                            CONSTANT_POOL[last] = i
-                            a = a .. "[" .. i .. "]" .. " = " .. dumpString(last) .. ", "
-                            code = code:gsub("\\"" .. last .. "\\""", "(CONSTANT_POOL[" .. CONSTANT_POOL[last] .. "])")
-                            i = i + 1
-                        else
-                            code = code:gsub("\\"" .. last .. "\\""", "(CONSTANT_POOL[" .. CONSTANT_POOL[last] .. "])")
-                        end
-                        last = ""
-                        foundOne = true
-                        break
-                    end
-                end
-            else
-                if instr then last = last .. c end
-            end
-        end
-    end
-    local last = ""
-    local instr = false
-    local foundOne = true
-    while foundOne do
-        foundOne = false
-        for i2 = 1, code:len() do
-            local c = code:sub(i2, i2)
-            if c == "\\'" then
-                if code:sub(i2 - 1, i2 - 1) == "\\\\" then
-                    if instr then last = last .. "\\'" end
-                else
-                    instr = not instr
-                    if not instr then
-                        if not CONSTANT_POOL[last] then
-                            CONSTANT_POOL[last] = i
-                            a = a .. "[" .. i .. "]" .. " = " .. dumpString(last) .. ", "
-                            code = code:gsub("\\'" .. last .. "\\'", "(CONSTANT_POOL[" .. CONSTANT_POOL[last] .. "])")
-                            i = i + 1
-                        else
-                            code = code:gsub("\\'" .. last .. "\\'", "(CONSTANT_POOL[" .. CONSTANT_POOL[last] .. "])")
-                        end
-                        last = ""
-                        foundOne = true
-                        break
-                    end
-                end
-            else
-                if instr then last = last .. c end
-            end
-        end
-    end
-    for var in code:gmatch("(%[(=*)%[.*%]%2%])") do
-        if not CONSTANT_POOL[var] then
-            a = a .. "[" .. i .. "]" .. " = " .. dumpString2(var) .. ", "
-            CONSTANT_POOL[var] = i
-            i = i + 1
-        end
-    end
-    a = a .. concat("[", i, "] = \"XFU5K470R 15 4W350M3. KR3D19 70 XFU5K470R!\"")
-    a = a .. " }\\n"
-
-    if level == 1 then
-        local chars = "QWERTYUIOPASDFGHJKLZXCVBNMqwertyuioplkjhgfdsazxcvbnm_"
-        local chars2 = "QWERTYUIOPASDFGHJKLZXCVBNMqwertyuioplkjhgfdsazxcvbnm_1234567890"
-        local taken = { }
-        taken[""] = true
-        local function GetReplacement()
-            local s = ""
-            while taken[s] do
-                local n = math.random(1, #chars)
-                s = s .. chars:sub(n, n)
-                for i = 1, math.random(6,20) do
-                    local n = math.random(1, #chars2)
-                    s = s .. chars2:sub(n, n)
-                end
-            end
-            taken[s] = true
-            return s
-        end
-        local library = {}
-        for fType in code:gmatch("local%s*function%s*([%w_]+)%(") do
-            local replacement = GetReplacement()
-            if #fType > 5 then
-                library[fType] = replacement
-                code = code:gsub("function " .. fType, "function " .. replacement)
-            end
-        end
-        for fCall in code:gmatch("([%w_]+)%s*%(") do
-            if library[fCall] then code = code:gsub(fCall .. "%(", library[fCall] .. "%(") end
-        end
-        local function isKeyword(s)
-            local s2 = "and break do else elseif end false for function if in local nil not or repeat return then true until"
-            for w in s2:gmatch("(%w+)") do if w == s then return true end end
-            return false
-        end
-        for each in code:gmatch("local%s*([%w_]*)%s*=") do
-            if #each > 3 and not isKeyword(each) then
-                local varName = GetReplacement()
-                code = code:gsub("local%s+" .. each .. "%s*=", "local " .. varName .. " = ")
-            end
-        end
-    end
-    code = code:gsub("(%s+)", " ")
-    a = a .. code
-    math.randomseed(os and os.time() or tick())
-    local __X = math.random()
-    local a2 = [[ math.randomseed(]] .. __X .. [[)
-local ____
-____ = { function(...) local t = { ...} return ____[8](t) end, print, game, math.frexp, math.random(1, 1100), string.dump, string.sub, table.concat, wait, tick, loadstring, "t", function(x) local x2 = loadstring(x) if x2 then return ____[tonumber("5048")](function() x2() end) else return nil end end, "InsertService", 1234567890, getfenv, "", "wai", 7.2, pcall, math.pi, ""}
-]] .. GenerateFluff() .. [[local ___ = ____[5]
-]] .. GenerateFluff() .. [[local _ = function(x) return string.char(x / ___) end
-]] .. GenerateFluff() .. [[local __ = {]]
-    math.randomseed(__X)
-    local ___X = math.random(1, 1100)
-    local a3 = { }
-    for i = 1, a:len() do
-        table.insert(a3, concat("_(", (string.byte(a:sub(i, i)) * ___X), "), "))
-    end
-    a2 = a2 .. table.concat(a3, "")
-    a2 = a2 .. " } \\n"
-    a2 = a2 .. GenerateFluff()
-    a2 = a2 .. "return ____[11]((____[8](__)), ____[#____])()\\n"
-    if level < mxLevel then
-        return obfuscate(a2, level + 1, mxLevel)
-    else
-        a2 = a2:gsub("[\\n\\r\\t ]+", " ")
-        return a2
-    end
-end
-xfuscate = function(code) return obfuscate(code, 1, 2) end
-return xfuscate
-'''
-    
-    import lupa
-    lua = lupa.LuaRuntime(unpack_returned_tuples=True)
-    obfuscator_func = lua.execute(obfuscator)
-    obfuscated = obfuscator_func(full_code)
-    return obfuscated
-
-# ---------- SMART OBFUSCATION WRAPPER ----------
-def obfuscate_script(lua_code):
-    """Try XFU5K470R, fallback to Base64 if it fails or doesn't change."""
-    try:
-        obfuscated = obfuscate_with_xfu5k470r(lua_code)
-        # Check if it actually changed
-        if obfuscated == lua_code or len(obfuscated) < len(lua_code) * 0.5:
-            print("XFU5K470R returned original or too short – using fallback.")
-            return obfuscate_fallback(lua_code)
-        else:
-            print("XFU5K470R obfuscation successful.")
-            return obfuscated
-    except Exception as e:
-        print(f"XFU5K470R crashed: {e} – using fallback.")
-        return obfuscate_fallback(lua_code)
-
-# ---------- DISCORD BOT COMMANDS ----------
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
         label="Key to Redeem",
@@ -343,13 +102,17 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
         keys = load_json(KEYS_FILE)
         users = load_json(USERS_FILE)
         uid = str(interaction.user.id)
-        
+
         if key not in keys or not keys[key]["active"]:
             return await interaction.response.send_message("❌ Invalid or expired key.", ephemeral=True)
-        
+
+        expires = datetime.fromisoformat(keys[key]["expires"])
+        if datetime.utcnow() > expires:
+            return await interaction.response.send_message("❌ This key has expired.", ephemeral=True)
+
         users[uid] = {"key": key, "redeemed": datetime.utcnow().isoformat()}
         save_json(USERS_FILE, users)
-        
+
         embed = discord.Embed(title="✅ Key Redeemed Successfully!", color=discord.Color.green())
         embed.add_field(name="Your Key", value=f"`{key}`", inline=False)
         embed.add_field(name="Status", value="Active ✅", inline=True)
@@ -372,17 +135,17 @@ class PanelView(discord.ui.View):
         users = load_json(USERS_FILE)
         panel = load_json(PANEL_FILE)
         uid = str(interaction.user.id)
-        
+
         if uid not in users:
             return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
         if "script_id" not in panel or not panel["script_id"]:
             return await interaction.response.send_message("⚠️ No script has been added yet.", ephemeral=True)
-        
+
         user_key = users[uid]["key"]
         script_url = f"https://{WEBSITE_DOMAIN}/{panel['script_id']}"
-        
+
         loadstring_code = f'getgenv().SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
-        
+
         embed = discord.Embed(title="📜 Your Loadstring", color=discord.Color.green())
         embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
         embed.set_footer(text="SCRIPT_KEY is REQUIRED — script will NOT work without it!")
@@ -411,19 +174,19 @@ async def on_ready():
 async def create_panel(interaction: discord.Interaction, script_title: str, description: str = None):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("No permission.", ephemeral=True)
-    
+
     if not description:
         description = f"This control panel is for the project: **{script_title}**\n\nIf you're a buyer, click on the buttons below to redeem your key, get the script or get your role."
-    
+
     embed = discord.Embed(title=script_title, description=description, color=discord.Color.blue())
     embed.set_footer(text="M1rage Control Panel")
-    
+
     panel = load_json(PANEL_FILE)
     panel["title"] = script_title
     panel["description"] = description
     panel["channel_id"] = str(interaction.channel_id)
     save_json(PANEL_FILE, panel)
-    
+
     await interaction.response.send_message(embed=embed, view=PanelView())
 
 @client.tree.command(name="genkey", description="Generate new key")
@@ -434,56 +197,91 @@ async def genkey(interaction: discord.Interaction, days: int):
     user_key = generate_user_key()
     keys = load_json(KEYS_FILE)
     expires = (datetime.utcnow() + timedelta(days=days)).isoformat()
-    keys[user_key] = {"active": True, "expires": expires, "owner": str(interaction.user.id)}
+    keys[user_key] = {
+        "active": True,
+        "expires": expires,
+        "owner": str(interaction.user.id),
+        "owner_name": interaction.user.name
+    }
     save_json(KEYS_FILE, keys)
     await interaction.response.send_message(f"✅ Key Generated:\n`{user_key}`\nValid: {days} days", ephemeral=True)
+
+@client.tree.command(name="view-all-keys", description="View all keys (Admin only)")
+async def view_all_keys(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("No permission.", ephemeral=True)
+
+    keys = load_json(KEYS_FILE)
+    if not keys:
+        return await interaction.response.send_message("No keys found.", ephemeral=True)
+
+    lines = []
+    for k, v in keys.items():
+        status = "🟢 Active" if v["active"] else "🔴 Inactive"
+        expires = datetime.fromisoformat(v["expires"])
+        if datetime.utcnow() > expires:
+            status = "🔴 Expired"
+        owner = v.get("owner_name", v.get("owner", "Unknown"))
+        lines.append(f"**{k}** — {status} — expires: {v['expires']} — owner: {owner}")
+
+    chunks = []
+    current = ""
+    for line in lines:
+        if len(current) + len(line) + 1 > 1900:
+            chunks.append(current)
+            current = ""
+        current += line + "\n"
+    if current:
+        chunks.append(current)
+
+    if not chunks:
+        return await interaction.response.send_message("No keys to display.", ephemeral=True)
+
+    await interaction.response.send_message(f"**All Keys:**\n{chunks[0]}", ephemeral=True)
+    for chunk in chunks[1:]:
+        await interaction.followup.send(chunk, ephemeral=True)
 
 @client.tree.command(name="add-script", description="Add Lua script file (Admin only)")
 @app_commands.describe(file="Upload .lua or .txt file")
 async def add_script(interaction: discord.Interaction, file: discord.Attachment):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("No permission.", ephemeral=True)
-    
+
     panel = load_json(PANEL_FILE)
     if not panel or "channel_id" not in panel:
         return await interaction.response.send_message("⚠️ No panel found. Create one first with `/create-panel`.", ephemeral=True)
-    
+
     if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
         return await interaction.response.send_message("❌ Only .lua or .txt files accepted.", ephemeral=True)
-    
-    await interaction.response.send_message("🔄 Obfuscating script...", ephemeral=True)
-    
+
+    await interaction.response.send_message("🔄 Obfuscating and securing script...", ephemeral=True)
+
     try:
         content = await file.read()
         lua_code = content.decode("utf-8")
-        
-        # Use the smart wrapper
+
         obfuscated_code = obfuscate_script(lua_code)
-        
-        # Log a snippet to console for debugging
-        print(f"Obfuscated preview: {obfuscated_code[:200]}...")
-        
+
         script_id = generate_script_id()
-        
+
         scripts = load_json(SCRIPTS_FILE)
         scripts[script_id] = obfuscated_code
         save_json(SCRIPTS_FILE, scripts)
-        
+
         panel["script_id"] = script_id
         save_json(PANEL_FILE, panel)
-        
+
         direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
-        
+
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
         embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
-        embed.add_field(name="Obfuscator", value="XFU5K470R Advanced ✅ (fallback: Base64)" if "XFU5K470R" in obfuscated_code else "Base64 (fallback)", inline=False)
+        embed.add_field(name="Protection", value="Server‑validated key + Base64 encoding", inline=False)
         await interaction.followup.send(embed=embed)
-        
-    except Exception as e:
-        await interaction.followup.send(f"❌ Obfuscation failed: {str(e)}", ephemeral=True)
 
-# ---------- FLASK SERVER ----------
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+
 app = Flask(__name__)
 
 @app.route("/<script_id>")
@@ -493,9 +291,25 @@ def get_script(script_id):
         return Response(scripts[script_id], mimetype="text/plain")
     return "Script Not Found", 404
 
+@app.route("/checkkey")
+def check_key():
+    key = request.args.get("key")
+    if not key:
+        return {"valid": False, "reason": "No key provided"}
+
+    keys = load_json(KEYS_FILE)
+    if key not in keys or not keys[key]["active"]:
+        return {"valid": False, "reason": "Invalid key"}
+
+    expires = datetime.fromisoformat(keys[key]["expires"])
+    if datetime.utcnow() > expires:
+        return {"valid": False, "reason": "Key expired"}
+
+    return {"valid": True, "expires": keys[key]["expires"]}
+
 @app.route("/")
 def home():
-    return "M1rage Lua Service Online | XFU5K470R Obfuscator"
+    return "M1rage Lua Service Online | Protected by server‑side key validation"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
