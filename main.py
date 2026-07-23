@@ -9,14 +9,61 @@ from flask import Flask, Response, request
 import threading
 import sys
 import traceback
+import pymongo
 
 TOKEN = os.getenv("TOKEN")
 WEBSITE_DOMAIN = os.getenv("WEBSITE_DOMAIN", "my-panel-bot.onrender.com")
 WEBSITE_DOMAIN = WEBSITE_DOMAIN.replace("http://", "").replace("https://", "")
 
-if not TOKEN:
-    print("ERROR: TOKEN environment variable not set.")
+MONGODB_URI = os.getenv("MONGODB_URI")
+if not MONGODB_URI:
+    print("ERROR: MONGODB_URI environment variable not set.")
     sys.exit(1)
+
+mongo_client = pymongo.MongoClient(MONGODB_URI)
+db = mongo_client.get_database("bot_data")
+keys_col = db["keys"]
+users_col = db["users"]
+panel_col = db["panel"]
+scripts_col = db["scripts"]
+
+def load_json(filename):
+    if filename == "keys":
+        col = keys_col
+    elif filename == "users":
+        col = users_col
+    elif filename == "panel":
+        col = panel_col
+    elif filename == "scripts":
+        col = scripts_col
+    else:
+        return {}
+    docs = list(col.find({}))
+    result = {}
+    for doc in docs:
+        if 'key' in doc and 'value' in doc:
+            result[doc['key']] = doc['value']
+    return result
+
+def save_json(filename, data):
+    if filename == "keys":
+        col = keys_col
+    elif filename == "users":
+        col = users_col
+    elif filename == "panel":
+        col = panel_col
+    elif filename == "scripts":
+        col = scripts_col
+    else:
+        return
+    col.delete_many({})
+    for key, value in data.items():
+        col.insert_one({"key": key, "value": value})
+
+KEYS_FILE = "keys"
+USERS_FILE = "users"
+PANEL_FILE = "panel"
+SCRIPTS_FILE = "scripts"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -35,26 +82,6 @@ class MyBot(discord.Client):
             traceback.print_exc()
 
 client = MyBot()
-
-KEYS_FILE = "keys.json"
-USERS_FILE = "users.json"
-PANEL_FILE = "panel.json"
-SCRIPTS_FILE = "scripts.json"
-
-def load_json(filename):
-    try:
-        with open(filename, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Error loading {filename}: {e}")
-        return {}
-
-def save_json(filename, data):
-    try:
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        print(f"Error saving {filename}: {e}")
 
 def generate_user_key():
     parts = []
@@ -223,8 +250,6 @@ class PanelView(discord.ui.View):
             uid = str(interaction.user.id)
             if uid not in users:
                 return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
-            # Placeholder: In a real HWID system, you'd clear the HWID for this user.
-            # For now, we just acknowledge.
             await interaction.response.send_message("⚙️ HWID reset feature is coming soon. For now, contact support.", ephemeral=True)
         except Exception as e:
             print(f"reset_hwid_btn error: {e}")
@@ -267,18 +292,18 @@ async def create_panel(interaction: discord.Interaction, script_title: str, desc
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("No permission.", ephemeral=True)
 
-        # Default description without extra spaces
         if not description:
             description = "This control panel is for the project: **{}**\n\nClick the buttons below to redeem your key, get the script, or get your role.".format(script_title)
 
         embed = discord.Embed(title=script_title, description=description, color=discord.Color.dark_purple())
-        embed.set_footer(text="M1rage Control Panel")
+        embed.set_footer(text=f"{interaction.user.display_name} Control Panel")
 
         panel = load_json(PANEL_FILE)
         panel["title"] = script_title
         panel["description"] = description
         panel["channel_id"] = str(interaction.channel_id)
         panel["created_at"] = datetime.utcnow().isoformat()
+        panel["creator"] = interaction.user.display_name
         save_json(PANEL_FILE, panel)
 
         await interaction.response.send_message(embed=embed, view=PanelView())
