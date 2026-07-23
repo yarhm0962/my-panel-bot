@@ -44,8 +44,19 @@ def load_json(filename):
         if filename == "panel":
             result[doc['_id']] = doc
         else:
-            if 'key' in doc and 'value' in doc:
+            # For users, we store a dict with 'keys' list
+            if filename == "users":
+                # migrate old format if needed
+                if 'key' in doc and 'value' and isinstance(doc['value'], str):
+                    # old format: single key string -> convert to list
+                    doc['value'] = {"keys": [doc['value']]}
+                elif 'key' in doc and 'value' and isinstance(doc['value'], dict):
+                    # already new format
+                    pass
                 result[doc['key']] = doc['value']
+            else:
+                if 'key' in doc and 'value' in doc:
+                    result[doc['key']] = doc['value']
     return result
 
 def save_json(filename, data):
@@ -192,12 +203,24 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if datetime.now(timezone.utc) > expires:
                 return await interaction.response.send_message("❌ This key has expired.", ephemeral=True)
 
-            users[uid] = {"key": key, "redeemed": datetime.now(timezone.utc).isoformat()}
+            # ---- MULTIPLE KEY SUPPORT ----
+            user_data = users.get(uid)
+            if user_data is None:
+                user_data = {"keys": []}
+            # ensure keys is a list
+            if not isinstance(user_data.get("keys"), list):
+                user_data["keys"] = []
+            if key not in user_data["keys"]:
+                user_data["keys"].append(key)
+            else:
+                return await interaction.response.send_message("✅ You already redeemed this key.", ephemeral=True)
+            users[uid] = user_data
             save_json(USERS_FILE, users)
 
             embed = discord.Embed(title="✅ Key Redeemed Successfully!", color=discord.Color.green())
             embed.add_field(name="Your Key", value=f"`{key}`", inline=False)
             embed.add_field(name="Status", value="Active ✅", inline=True)
+            embed.add_field(name="Total Redeemed Keys", value=str(len(user_data["keys"])), inline=True)
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             print(f"RedeemModal error: {e}")
@@ -213,10 +236,7 @@ class PanelView(discord.ui.View):
     @discord.ui.button(label="Redeem Key", emoji="🔑", style=discord.ButtonStyle.green, custom_id="redeem_btn")
     async def redeem_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            users = load_json(USERS_FILE)
-            uid = str(interaction.user.id)
-            if uid in users:
-                return await interaction.response.send_message("✅ Your key is already redeemed!", ephemeral=True)
+            # We no longer block if already redeemed – they can redeem more keys
             await interaction.response.send_modal(RedeemModal())
         except Exception as e:
             print(f"redeem_btn error: {e}")
@@ -228,9 +248,12 @@ class PanelView(discord.ui.View):
         try:
             users = load_json(USERS_FILE)
             uid = str(interaction.user.id)
+            user_data = users.get(uid)
+            if not user_data or not user_data.get("keys") or len(user_data["keys"]) == 0:
+                return await interaction.response.send_message("❌ You have no redeemed keys. Redeem one first using the button above.", ephemeral=True)
 
-            if uid not in users:
-                return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
+            # Use the most recent key
+            user_key = user_data["keys"][-1]
 
             panels = load_json(PANEL_FILE)
             panel = None
@@ -245,7 +268,6 @@ class PanelView(discord.ui.View):
             if not panel or "script_id" not in panel or not panel["script_id"]:
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
-            user_key = users[uid]["key"]
             script_url = f"https://{WEBSITE_DOMAIN}/{panel['script_id']}"
 
             loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
@@ -264,8 +286,8 @@ class PanelView(discord.ui.View):
         try:
             users = load_json(USERS_FILE)
             uid = str(interaction.user.id)
-            if uid not in users:
-                return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
+            if uid not in users or not users[uid].get("keys"):
+                return await interaction.response.send_message("❌ You must redeem a key first.", ephemeral=True)
             role = discord.utils.get(interaction.guild.roles, name="Verified User")
             if role:
                 await interaction.user.add_roles(role)
@@ -282,8 +304,8 @@ class PanelView(discord.ui.View):
         try:
             users = load_json(USERS_FILE)
             uid = str(interaction.user.id)
-            if uid not in users:
-                return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
+            if uid not in users or not users[uid].get("keys"):
+                return await interaction.response.send_message("❌ You must redeem a key first.", ephemeral=True)
             await interaction.response.send_message("⚙️ HWID reset feature is coming soon. For now, contact support.", ephemeral=True)
         except Exception as e:
             print(f"reset_hwid_btn error: {e}")
@@ -295,18 +317,16 @@ class PanelView(discord.ui.View):
         try:
             users = load_json(USERS_FILE)
             uid = str(interaction.user.id)
-            if uid not in users:
-                return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
-            user_data = users[uid]
-            key = user_data["key"]
-            redeemed = user_data.get("redeemed", "Unknown")
-            keys = load_json(KEYS_FILE)
-            key_info = keys.get(key, {})
-            expires = key_info.get("expires", "Unknown")
+            user_data = users.get(uid)
+            if not user_data or not user_data.get("keys"):
+                return await interaction.response.send_message("❌ You have no redeemed keys.", ephemeral=True)
+            keys = user_data["keys"]
+            # Show last redeemed key and how many total
+            last_key = keys[-1]
+            total = len(keys)
             embed = discord.Embed(title="📊 Your Stats", color=discord.Color.dark_purple())
-            embed.add_field(name="Key", value=f"`{key}`", inline=False)
-            embed.add_field(name="Redeemed On", value=redeemed, inline=True)
-            embed.add_field(name="Expires", value=expires, inline=True)
+            embed.add_field(name="Last Redeemed Key", value=f"`{last_key}`", inline=False)
+            embed.add_field(name="Total Keys Redeemed", value=str(total), inline=True)
             embed.set_footer(text="M1rage Control Panel")
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
