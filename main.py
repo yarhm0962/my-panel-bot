@@ -4,6 +4,7 @@ import json
 import random
 import os
 import base64
+import io
 from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, request
 import threading
