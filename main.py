@@ -214,6 +214,82 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             traceback.print_exc()
             await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
+class StatsView(discord.ui.View):
+    def __init__(self, user, keys_data):
+        super().__init__(timeout=120)
+        self.user = user
+        self.keys_data = keys_data  # list of (key, key_data) tuples
+
+        # Create the select menu
+        options = []
+        for k, data in self.keys_data:
+            label = k[:12] + "..." if len(k) > 15 else k
+            expiry = datetime.fromisoformat(data["expires"])
+            is_active = data["active"] and datetime.now(timezone.utc) <= expiry
+            status = "🟢 Active" if is_active else "🔴 Expired"
+            options.append(discord.SelectOption(label=label, value=k, description=f"{status} - expires {expiry.strftime('%Y-%m-%d')}"))
+
+        self.select = discord.ui.Select(placeholder="Choose a key to view stats", options=options, custom_id="stats_select")
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        selected_key = interaction.data["values"][0]
+        # Find the key data
+        selected_data = None
+        for k, data in self.keys_data:
+            if k == selected_key:
+                selected_data = data
+                break
+        if not selected_data:
+            await interaction.response.send_message("Key not found.", ephemeral=True)
+            return
+
+        embed = self.build_stats_embed(selected_key, selected_data)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    def build_stats_embed(self, key, data):
+        now = datetime.now(timezone.utc)
+        expires = datetime.fromisoformat(data["expires"])
+        is_active = data["active"] and now <= expires
+
+        # Compute time left
+        if is_active:
+            time_left = expires - now
+            days = time_left.days
+            hours = time_left.seconds // 3600
+            minutes = (time_left.seconds % 3600) // 60
+            if days > 0:
+                time_left_str = f"{days} day{'s' if days > 1 else ''} {hours} hour{'s' if hours != 1 else ''}"
+            elif hours > 0:
+                time_left_str = f"{hours} hour{'s' if hours != 1 else ''} {minutes} minute{'s' if minutes != 1 else ''}"
+            else:
+                time_left_str = f"{minutes} minute{'s' if minutes != 1 else ''}"
+        else:
+            time_left_str = "Expired"
+
+        status_str = "🟢 Active" if is_active else "🔴 Expired"
+        created = data.get("created_at", "Unknown")
+        if created != "Unknown":
+            try:
+                created_dt = datetime.fromisoformat(created)
+                created = created_dt.strftime("%Y-%m-%d %H:%M UTC")
+            except:
+                pass
+
+        embed = discord.Embed(
+            title=f"🗝️ {self.user.display_name}'s Key",
+            color=discord.Color.dark_purple()
+        )
+        embed.add_field(name="Key", value=f"`{key}`", inline=False)
+        embed.add_field(name="Status", value=status_str, inline=True)
+        embed.add_field(name="Type", value="Multi‑use", inline=True)
+        embed.add_field(name="Created", value=created, inline=True)
+        embed.add_field(name="Expires", value=expires.strftime("%Y-%m-%d %H:%M UTC") if is_active else "Expired", inline=True)
+        embed.add_field(name="Time Left", value=time_left_str, inline=True)
+        embed.set_footer(text="M1rage Control Panel")
+        return embed
+
 class PanelView(discord.ui.View):
     def __init__(self, channel_id, message_id=None):
         super().__init__(timeout=None)
@@ -302,7 +378,6 @@ class PanelView(discord.ui.View):
             if not role:
                 return await interaction.response.send_message("⚠️ The configured role no longer exists. Contact an admin.", ephemeral=True)
 
-            # Check bot permissions
             bot_member = interaction.guild.me
             if not bot_member.guild_permissions.manage_roles:
                 return await interaction.response.send_message("❌ I don't have permission to manage roles. Please give me the 'Manage Roles' permission.", ephemeral=True)
@@ -310,7 +385,6 @@ class PanelView(discord.ui.View):
             if role >= bot_member.top_role:
                 return await interaction.response.send_message("❌ I cannot assign this role because it is above or equal to my highest role. Please move my role higher.", ephemeral=True)
 
-            # Check if user already has the role
             if role in interaction.user.roles:
                 return await interaction.response.send_message("✅ You already have this role.", ephemeral=True)
 
@@ -347,18 +421,30 @@ class PanelView(discord.ui.View):
             user_data = users.get(uid)
             if not user_data or not user_data.get("keys"):
                 return await interaction.response.send_message("❌ You have no redeemed keys.", ephemeral=True)
-            active_keys = [k for k in user_data["keys"] if k in keys and keys[k]["active"]]
-            if not active_keys:
+
+            # Gather active keys with their data
+            active_keys_data = []
+            for k in user_data["keys"]:
+                if k in keys and keys[k]["active"]:
+                    active_keys_data.append((k, keys[k]))
+
+            if not active_keys_data:
                 return await interaction.response.send_message("❌ All your keys are invalid or expired.", ephemeral=True)
-            last_key = active_keys[-1]
-            total_active = len(active_keys)
-            total_redeemed = len(user_data["keys"])
-            embed = discord.Embed(title="📊 Your Stats", color=discord.Color.dark_purple())
-            embed.add_field(name="Last Active Key", value=f"`{last_key}`", inline=False)
-            embed.add_field(name="Active Keys", value=str(total_active), inline=True)
-            embed.add_field(name="Total Redeemed (including expired)", value=str(total_redeemed), inline=True)
-            embed.set_footer(text="M1rage Control Panel")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+            if len(active_keys_data) == 1:
+                # Single key – just show the embed, no dropdown
+                key, data = active_keys_data[0]
+                view = StatsView(interaction.user, active_keys_data)
+                embed = view.build_stats_embed(key, data)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                # Multiple keys – show dropdown
+                view = StatsView(interaction.user, active_keys_data)
+                # Use the first key for initial embed
+                key, data = active_keys_data[0]
+                embed = view.build_stats_embed(key, data)
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
         except Exception as e:
             print(f"stats_btn error: {e}")
             traceback.print_exc()
@@ -423,12 +509,14 @@ async def genkey(interaction: discord.Interaction, days: int):
             return await interaction.response.send_message("No permission.", ephemeral=True)
         user_key = generate_user_key()
         keys = load_json(KEYS_FILE)
-        expires = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(days=days)
         keys[user_key] = {
             "active": True,
-            "expires": expires,
+            "expires": expires.isoformat(),
             "owner": str(interaction.user.id),
-            "owner_name": interaction.user.name
+            "owner_name": interaction.user.name,
+            "created_at": now.isoformat()
         }
         save_json(KEYS_FILE, keys)
         await interaction.response.send_message(f"✅ Key Generated:\n`{user_key}`\nValid: {days} days", ephemeral=True)
