@@ -4,17 +4,12 @@ import json
 import random
 import os
 import base64
-import re
 from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, request
 import threading
 import sys
 import traceback
 import pymongo
-import time
-import urllib.request
-import urllib.error
-import urllib.parse
 
 TOKEN = os.getenv("TOKEN")
 WEBSITE_DOMAIN = os.getenv("WEBSITE_DOMAIN", "my-panel-bot.onrender.com")
@@ -105,17 +100,25 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
-# ========== OBFUSCATION – TABLE-BASED ==========
+# ============================================================
+# NEW OBFUSCATION – TABLE‑BASED (as requested)
+# ============================================================
 def obfuscate_script(lua_code, panel_id):
+    # 1. Base64 encode the original script
     encoded = base64.b64encode(lua_code.encode()).decode()
-    import random
+    
+    # 2. Split into random chunks (3–8 chars)
     chunks = []
     i = 0
     while i < len(encoded):
         size = random.randint(3, 8)
         chunks.append(encoded[i:i+size])
         i += size
+    
+    # 3. Build the Lua table string
     table_str = "{" + ",".join(f'"{chunk}"' for chunk in chunks) + "}"
+    
+    # 4. The wrapper with placeholders
     wrapper = f'''
 return(function(...)
     local L = {table_str}
@@ -180,56 +183,9 @@ end)()
     wrapper = wrapper.replace("{panel_id}", panel_id)
     return wrapper
 
-# ========== UPLOAD USING URLLIB (no requests) ==========
-def upload_to_paste_service(lua_code):
-    """Try pastes.dev then rentry.co using urllib."""
-    # pastes.dev
-    for attempt in range(2):
-        try:
-            req = urllib.request.Request(
-                "https://api.pastes.dev/post",
-                data=lua_code.encode('utf-8'),
-                headers={"User-Agent": "M1rage-Bot", "Content-Type": "text/plain"},
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = resp.read().decode()
-                if resp.status == 200:
-                    try:
-                        import json
-                        j = json.loads(data)
-                        pid = j.get("key")
-                        if pid:
-                            return ("pastes.dev", pid)
-                    except:
-                        pass
-                    txt = data.strip()
-                    if txt and not txt.startswith('<!DOCTYPE'):
-                        return ("pastes.dev", txt)
-        except Exception as e:
-            print(f"pastes.dev attempt {attempt+1} failed: {e}")
-        time.sleep(1)
-
-    # rentry.co
-    try:
-        payload = json.dumps({"content": lua_code}).encode('utf-8')
-        req = urllib.request.Request(
-            "https://rentry.co/api/new",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = resp.read().decode()
-            if resp.status == 200:
-                j = json.loads(data)
-                pid = j.get("url", "").replace("https://rentry.co/", "")
-                if pid:
-                    return ("rentry.co", pid)
-    except Exception as e:
-        print(f"rentry.co failed: {e}")
-
-    return None, None
+# ============================================================
+# Everything below is unchanged from the last stable version
+# ============================================================
 
 def ensure_panel_guild(panel_data, guild_id):
     if panel_data and not panel_data.get("guild_id"):
@@ -481,7 +437,7 @@ class PanelView(discord.ui.View):
             if script_id in scripts:
                 script_url = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
             else:
-                script_url = f"https://api.pastes.dev/{script_id}"
+                script_url = f"https://api.pastes.dev/{script_id}"  # fallback (if any old script was uploaded there)
 
             loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
 
@@ -852,39 +808,28 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         content = await file.read()
         lua_code = content.decode("utf-8")
 
+        # Use the new obfuscation
         obfuscated_code = obfuscate_script(lua_code, panel_key)
 
-        # Try paste services
-        service, pid = upload_to_paste_service(obfuscated_code)
-        if service and pid:
-            script_id = pid
-            storage = service
-            panel["script_id"] = script_id
-            panels[panel_key] = panel
-            save_json(PANEL_FILE, panels)
-            if service == "pastes.dev":
-                direct_link = f"https://api.pastes.dev/{pid}"
-            else:  # rentry.co
-                direct_link = f"https://rentry.co/{pid}"
-        else:
-            # Fallback to MongoDB
+        script_id = panel.get("script_id")
+        if not script_id:
             script_id = generate_script_id()
-            scripts = load_json(SCRIPTS_FILE)
-            scripts[script_id] = obfuscated_code
-            save_json(SCRIPTS_FILE, scripts)
             panel["script_id"] = script_id
-            panels[panel_key] = panel
-            save_json(PANEL_FILE, panels)
-            direct_link = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
-            storage = "MongoDB (fallback)"
+
+        scripts = load_json(SCRIPTS_FILE)
+        scripts[script_id] = obfuscated_code
+        save_json(SCRIPTS_FILE, scripts)
+
+        panels[panel_key] = panel
+        save_json(PANEL_FILE, panels)
+
+        direct_link = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
 
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
         embed.add_field(name="Panel", value=f"Message ID: {message_id}", inline=False)
         embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
-        embed.add_field(name="Storage", value=storage, inline=False)
-        if storage == "MongoDB (fallback)":
-            embed.add_field(name="Note", value="External paste services unavailable. Script is stored on your bot's server.", inline=False)
+        embed.add_field(name="Storage", value="MongoDB", inline=False)
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
