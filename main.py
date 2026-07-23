@@ -45,7 +45,20 @@ def load_json(filename):
             result[doc['_id']] = doc
         else:
             if filename == "users":
-                result[doc['key']] = doc['value']
+                # Migrate old user data if needed
+                value = doc['value']
+                if isinstance(value, str):
+                    # Old single‑key format – convert to new panel structure
+                    # We can't know which panel, so we create empty panels dict.
+                    value = {"panels": {}}
+                elif isinstance(value, dict):
+                    # Ensure 'panels' key exists
+                    if "panels" not in value:
+                        value["panels"] = {}
+                else:
+                    # Fallback
+                    value = {"panels": {}}
+                result[doc['key']] = value
             else:
                 if 'key' in doc and 'value' in doc:
                     result[doc['key']] = doc['value']
@@ -228,7 +241,12 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if datetime.now(timezone.utc) > expires:
                 return await interaction.response.send_message("❌ This key has expired.", ephemeral=True)
 
-            user_data = users.get(uid, {"panels": {}})
+            # Ensure user_data has correct structure
+            user_data = users.get(uid)
+            if user_data is None or not isinstance(user_data, dict):
+                user_data = {"panels": {}}
+            if "panels" not in user_data:
+                user_data["panels"] = {}
             if panel_id not in user_data["panels"]:
                 user_data["panels"][panel_id] = {"keys": []}
             if key not in user_data["panels"][panel_id]["keys"]:
@@ -369,6 +387,8 @@ class PanelView(discord.ui.View):
                 return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
 
             user_data = users.get(uid, {})
+            if not isinstance(user_data, dict):
+                user_data = {}
             panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel. Redeem one using the button above.", ephemeral=True)
@@ -427,6 +447,8 @@ class PanelView(discord.ui.View):
                 return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
 
             user_data = users.get(uid, {})
+            if not isinstance(user_data, dict):
+                user_data = {}
             panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
             if not panel_keys:
                 return await interaction.response.send_message("❌ You must redeem a key for this panel first.", ephemeral=True)
@@ -508,6 +530,8 @@ class PanelView(discord.ui.View):
                 return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
 
             user_data = users.get(uid, {})
+            if not isinstance(user_data, dict):
+                user_data = {}
             panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel.", ephemeral=True)
@@ -717,7 +741,6 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-# ========== FIX: add_script – message_id is now REQUIRED ==========
 @client.tree.command(name="add_script", description="Add a Lua script file to a specific panel (Admin only)")
 @app_commands.describe(message_id="Message ID of the panel embed (REQUIRED – right-click the panel message and Copy ID)", file="Upload .lua or .txt file")
 @app_commands.rename(message_id="message-id")
