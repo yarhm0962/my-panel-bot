@@ -4,12 +4,15 @@ import json
 import random
 import os
 import base64
+import requests
+import re
 from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, request
 import threading
 import sys
 import traceback
 import pymongo
+import time
 
 TOKEN = os.getenv("TOKEN")
 WEBSITE_DOMAIN = os.getenv("WEBSITE_DOMAIN", "my-panel-bot.onrender.com")
@@ -44,19 +47,7 @@ def load_json(filename):
         if filename == "panel":
             result[doc['_id']] = doc
         else:
-            if filename == "users":
-                value = doc['value']
-                if isinstance(value, str):
-                    value = {"panels": {}}
-                elif isinstance(value, dict):
-                    if "panels" not in value:
-                        value["panels"] = {}
-                else:
-                    value = {"panels": {}}
-                result[doc['key']] = value
-            else:
-                if 'key' in doc and 'value' in doc:
-                    result[doc['key']] = doc['value']
+            result[doc['key']] = doc['value']
     return result
 
 def save_json(filename, data):
@@ -112,68 +103,129 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
+# ========== NEW OBFUSCATION – TABLE-BASED ==========
 def obfuscate_script(lua_code, panel_id):
+    # 1. Encode original code in Base64
     encoded = base64.b64encode(lua_code.encode()).decode()
+    
+    # 2. Split into random-length chunks (3–8 chars)
+    import random
+    chunks = []
+    i = 0
+    while i < len(encoded):
+        size = random.randint(3, 8)
+        chunks.append(encoded[i:i+size])
+        i += size
+    
+    # Format table string
+    table_str = "{" + ",".join(f'"{chunk}"' for chunk in chunks) + "}"
+    
+    # 3. Build the wrapper with placeholders for WEBSITE_DOMAIN and panel_id
     wrapper = f'''
-local key = _G.SCRIPT_KEY or getgenv().SCRIPT_KEY
-if not key or key == "" then
-    game:GetService("Players").LocalPlayer:Kick('Pls Put Your _G.SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
-    return nil
-end
-
-local function b64decode(data)
-    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-    data = string.gsub(data, '[^'..b..'=]', '')
-    local result = {{}}
-    for i = 1, #data, 4 do
-        local chunk = data:sub(i, i+3)
-        local a, c, d, e = chunk:byte(1, 4)
-        local x = (a and a ~= 61) and (b:find(string.char(a), 1, true) - 1) or 0
-        local y = (c and c ~= 61) and (b:find(string.char(c), 1, true) - 1) or 0
-        local z = (d and d ~= 61) and (b:find(string.char(d), 1, true) - 1) or 0
-        local w = (e and e ~= 61) and (b:find(string.char(e), 1, true) - 1) or 0
-        local n1 = (x * 4) + math.floor(y / 16)
-        local n2 = ((y % 16) * 16) + math.floor(z / 4)
-        local n3 = ((z % 4) * 64) + w
-        table.insert(result, string.char(n1))
-        if c and c ~= 61 then table.insert(result, string.char(n2)) end
-        if d and d ~= 61 then table.insert(result, string.char(n3)) end
+return(function(...)
+    local L = {table_str}
+    local key = _G.SCRIPT_KEY or getgenv().SCRIPT_KEY
+    if not key or key == "" then
+        game:GetService("Players").LocalPlayer:Kick('Missing SCRIPT_KEY')
+        return nil
     end
-    return table.concat(result)
-end
 
-local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key .. "&panel={panel_id}"
-local success, response = pcall(function()
-    return game:GetService("HttpService"):JSONDecode(game:HttpGet(url))
-end)
+    local function b64decode(data)
+        local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+        data=string.gsub(data,'[^'..b..'=]','')
+        local r={{}}
+        for i=1,#data,4 do
+            local chunk=data:sub(i,i+3)
+            local a,c,d,e=chunk:byte(1,4)
+            local x=(a and a~=61)and(b:find(string.char(a),1,true)-1)or 0
+            local y=(c and c~=61)and(b:find(string.char(c),1,true)-1)or 0
+            local z=(d and d~=61)and(b:find(string.char(d),1,true)-1)or 0
+            local w=(e and e~=61)and(b:find(string.char(e),1,true)-1)or 0
+            local n1=(x*4)+math.floor(y/16)
+            local n2=((y%16)*16)+math.floor(z/4)
+            local n3=((z%4)*64)+w
+            table.insert(r,string.char(n1))
+            if c and c~=61 then table.insert(r,string.char(n2)) end
+            if d and d~=61 then table.insert(r,string.char(n3)) end
+        end
+        return table.concat(r)
+    end
 
-if not success then
-    game:GetService("Players").LocalPlayer:Kick('Could not reach validation server')
-    return nil
-end
+    local b64 = table.concat(L)
+    local decoded = b64decode(b64)
 
-if not response or not response.valid then
-    local msg = response and response.reason or "Invalid or expired key"
-    game:GetService("Players").LocalPlayer:Kick('Invalid or expired key: ' .. msg)
-    return nil
-end
+    local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key .. "&panel={panel_id}"
+    local success, response = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(game:HttpGet(url))
+    end)
 
-local decoded = b64decode("{encoded}")
-local fn = loadstring(decoded)
-if not fn then
-    game:GetService("Players").LocalPlayer:Kick('Failed to load script: invalid code')
-    return nil
-end
-fn()
-_G.SCRIPT_KEY = nil
-if getgenv then
-    getgenv().SCRIPT_KEY = nil
-end
+    if not success then
+        game:GetService("Players").LocalPlayer:Kick('Server error')
+        return nil
+    end
+
+    if not response or not response.valid then
+        local msg = response and response.reason or "Invalid key"
+        game:GetService("Players").LocalPlayer:Kick('Invalid key')
+        return nil
+    end
+
+    local fn = loadstring(decoded)
+    if not fn then
+        game:GetService("Players").LocalPlayer:Kick('Invalid code')
+        return nil
+    end
+    fn()
+
+    _G.SCRIPT_KEY = nil
+    if getgenv then getgenv().SCRIPT_KEY = nil end
+end)()
 '''
+    # Replace placeholders
     wrapper = wrapper.replace("{WEBSITE_DOMAIN}", WEBSITE_DOMAIN)
-    wrapper = wrapper.replace("{encoded}", encoded)
     wrapper = wrapper.replace("{panel_id}", panel_id)
     return wrapper
+
+def upload_to_paste_service(lua_code):
+    """Try pastes.dev first, then rentry.co, else None."""
+    # Try pastes.dev
+    for attempt in range(2):
+        try:
+            response = requests.post(
+                "https://api.pastes.dev/post",
+                data=lua_code,
+                headers={"User-Agent": "M1rage-Bot", "Content-Type": "text/plain"},
+                timeout=10
+            )
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    pid = data.get("key")
+                    if pid:
+                        return ("pastes.dev", pid)
+                except:
+                    pass
+                txt = response.text.strip()
+                if txt and not txt.startswith('<!DOCTYPE'):
+                    return ("pastes.dev", txt)
+        except:
+            pass
+        time.sleep(1)
+
+    # Try rentry.co
+    try:
+        payload = {"content": lua_code}
+        headers = {"Content-Type": "application/json"}
+        response = requests.post("https://rentry.co/api/new", json=payload, headers=headers, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            pid = data.get("url", "").replace("https://rentry.co/", "")
+            if pid:
+                return ("rentry.co", pid)
+    except:
+        pass
+
+    return None, None
 
 def ensure_panel_guild(panel_data, guild_id):
     if panel_data and not panel_data.get("guild_id"):
@@ -191,6 +243,34 @@ def find_panel(panels, lookup_id):
         if str(pid) == lookup_id:
             return pid, pdata
     return None, None
+
+def get_user_keys_for_panel(user_data, panel_id, keys_db):
+    if not user_data or not isinstance(user_data, dict):
+        return []
+    if "panels" in user_data:
+        panel_entry = user_data["panels"].get(panel_id)
+        if panel_entry and isinstance(panel_entry, dict):
+            return panel_entry.get("keys", [])
+        return []
+    if "key" in user_data:
+        return [user_data["key"]] if user_data["key"] in keys_db else []
+    return []
+
+def migrate_user_data(user_data, panel_id, key):
+    if isinstance(user_data, str):
+        old_key = user_data
+        new_data = {"panels": {panel_id: {"keys": [old_key]}}}
+        if key and key != old_key:
+            new_data["panels"][panel_id]["keys"].append(key)
+        return new_data
+    elif isinstance(user_data, dict) and "key" in user_data:
+        old_key = user_data["key"]
+        new_data = {"panels": {panel_id: {"keys": [old_key]}}}
+        if key and key != old_key:
+            new_data["panels"][panel_id]["keys"].append(key)
+        return new_data
+    else:
+        return {"panels": {panel_id: {"keys": [key]}} if key else {panel_id: {"keys": []}}}
 
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
@@ -223,9 +303,6 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            if panel.get("guild_id") != guild_id:
-                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
-
             key_data = keys.get(key)
             if not key_data or not key_data.get("active"):
                 return await interaction.response.send_message("❌ Invalid or expired key.", ephemeral=True)
@@ -238,16 +315,19 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
                 return await interaction.response.send_message("❌ This key has expired.", ephemeral=True)
 
             user_data = users.get(uid)
-            if user_data is None or not isinstance(user_data, dict):
+            if user_data is None:
                 user_data = {"panels": {}}
-            if "panels" not in user_data:
-                user_data["panels"] = {}
-            if panel_id not in user_data["panels"]:
-                user_data["panels"][panel_id] = {"keys": []}
-            if key not in user_data["panels"][panel_id]["keys"]:
-                user_data["panels"][panel_id]["keys"].append(key)
+            elif not isinstance(user_data, dict):
+                user_data = migrate_user_data(user_data, panel_id, key)
+            elif "panels" not in user_data:
+                user_data = migrate_user_data(user_data, panel_id, key)
             else:
-                return await interaction.response.send_message("✅ You already redeemed this key for this panel.", ephemeral=True)
+                if panel_id not in user_data["panels"]:
+                    user_data["panels"][panel_id] = {"keys": []}
+                if key in user_data["panels"][panel_id]["keys"]:
+                    return await interaction.response.send_message("✅ You already redeemed this key for this panel.", ephemeral=True)
+                user_data["panels"][panel_id]["keys"].append(key)
+
             users[uid] = user_data
             save_json(USERS_FILE, users)
 
@@ -378,13 +458,8 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            if panel.get("guild_id") != guild_id:
-                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
-
-            user_data = users.get(uid, {})
-            if not isinstance(user_data, dict):
-                user_data = {}
-            panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
+            user_data = users.get(uid)
+            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel. Redeem one using the button above.", ephemeral=True)
 
@@ -397,7 +472,12 @@ class PanelView(discord.ui.View):
             if not panel or "script_id" not in panel or not panel["script_id"]:
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
-            script_url = f"https://{WEBSITE_DOMAIN}/{panel['script_id']}"
+            script_id = panel["script_id"]
+            scripts = load_json(SCRIPTS_FILE)
+            if script_id in scripts:
+                script_url = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
+            else:
+                script_url = f"https://api.pastes.dev/{script_id}"
 
             loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
 
@@ -438,13 +518,8 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            if panel.get("guild_id") != guild_id:
-                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
-
-            user_data = users.get(uid, {})
-            if not isinstance(user_data, dict):
-                user_data = {}
-            panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
+            user_data = users.get(uid)
+            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
                 return await interaction.response.send_message("❌ You must redeem a key for this panel first.", ephemeral=True)
 
@@ -521,13 +596,8 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            if panel.get("guild_id") != guild_id:
-                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
-
-            user_data = users.get(uid, {})
-            if not isinstance(user_data, dict):
-                user_data = {}
-            panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
+            user_data = users.get(uid)
+            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel.", ephemeral=True)
 
@@ -660,10 +730,8 @@ async def view_all_keys(interaction: discord.Interaction):
         keys = load_json(KEYS_FILE)
         panels = load_json(PANEL_FILE)
 
-        # Build a set of panel IDs that exist in this guild (active panels)
         active_panel_ids = {pid for pid, pdata in panels.items() if pdata.get("guild_id") == guild_id}
 
-        # Filter keys: must belong to this guild and have a panel_id that exists in active panels
         guild_keys = {}
         for k, v in keys.items():
             if v.get("guild_id") == guild_id and v.get("panel_id") in active_panel_ids:
@@ -685,7 +753,6 @@ async def view_all_keys(interaction: discord.Interaction):
                 status = "🔴 Expired"
             owner = v.get("owner_name", v.get("owner", "Unknown"))
             panel_id = v.get("panel_id", "Unknown")
-            # Try to get panel title for more info
             panel_title = panels.get(panel_id, {}).get("title", "Unknown Panel")
             line = f"`{k}` — {status} — expires: {v['expires']} — owner: {owner} — panel: {panel_title}"
 
@@ -781,27 +848,40 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         content = await file.read()
         lua_code = content.decode("utf-8")
 
+        # ========== USE NEW OBFUSCATION ==========
         obfuscated_code = obfuscate_script(lua_code, panel_key)
 
-        script_id = panel.get("script_id")
-        if not script_id:
-            script_id = generate_script_id()
+        # Try paste services
+        service, pid = upload_to_paste_service(obfuscated_code)
+        if service and pid:
+            script_id = pid
+            storage = service
             panel["script_id"] = script_id
-
-        scripts = load_json(SCRIPTS_FILE)
-        scripts[script_id] = obfuscated_code
-        save_json(SCRIPTS_FILE, scripts)
-
-        panels[panel_key] = panel
-        save_json(PANEL_FILE, panels)
-
-        direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
+            panels[panel_key] = panel
+            save_json(PANEL_FILE, panels)
+            if service == "pastes.dev":
+                direct_link = f"https://api.pastes.dev/{pid}"
+            else:  # rentry.co
+                direct_link = f"https://rentry.co/{pid}"
+        else:
+            # Fallback to MongoDB
+            script_id = generate_script_id()
+            scripts = load_json(SCRIPTS_FILE)
+            scripts[script_id] = obfuscated_code
+            save_json(SCRIPTS_FILE, scripts)
+            panel["script_id"] = script_id
+            panels[panel_key] = panel
+            save_json(PANEL_FILE, panels)
+            direct_link = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
+            storage = "MongoDB (fallback)"
 
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
         embed.add_field(name="Panel", value=f"Message ID: {message_id}", inline=False)
         embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
-        embed.add_field(name="Protection", value="Server‑validated key + Base64 encoding", inline=False)
+        embed.add_field(name="Storage", value=storage, inline=False)
+        if storage == "MongoDB (fallback)":
+            embed.add_field(name="Note", value="External paste services unavailable. Script is stored on your bot's server.", inline=False)
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
@@ -811,16 +891,12 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
 
 app = Flask(__name__)
 
-@app.route("/<script_id>")
-def get_script(script_id):
-    try:
-        scripts = load_json(SCRIPTS_FILE)
-        if script_id in scripts:
-            return Response(scripts[script_id], mimetype="text/plain")
-        return "Script Not Found", 404
-    except Exception as e:
-        print(f"get_script error: {e}")
-        return "Internal Server Error", 500
+@app.route("/raw/<script_id>")
+def get_raw_script(script_id):
+    scripts = load_json(SCRIPTS_FILE)
+    if script_id in scripts:
+        return Response(scripts[script_id], mimetype="text/plain")
+    return "Script Not Found", 404
 
 @app.route("/checkkey")
 def check_key():
