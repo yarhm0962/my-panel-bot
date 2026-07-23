@@ -44,14 +44,10 @@ def load_json(filename):
         if filename == "panel":
             result[doc['_id']] = doc
         else:
-            # For users, we store a dict with 'keys' list
             if filename == "users":
-                # migrate old format if needed
                 if 'key' in doc and 'value' and isinstance(doc['value'], str):
-                    # old format: single key string -> convert to list
                     doc['value'] = {"keys": [doc['value']]}
                 elif 'key' in doc and 'value' and isinstance(doc['value'], dict):
-                    # already new format
                     pass
                 result[doc['key']] = doc['value']
             else:
@@ -114,20 +110,13 @@ def generate_script_id():
 
 def obfuscate_script(lua_code):
     encoded = base64.b64encode(lua_code.encode()).decode()
-
     wrapper = f'''
--- ============================================================
--- KEY VALIDATION (NO HARDCODED KEY – WORKS WITH ANY VALID KEY)
--- ============================================================
-local key = _G.SCRIPT_KEY
+local key = _G.SCRIPT_KEY or getgenv().SCRIPT_KEY
 if not key or key == "" then
     game:GetService("Players").LocalPlayer:Kick('Pls Put Your _G.SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
-    return
+    return nil
 end
 
--- ============================================================
--- BASE64 DECODER (STANDARD, WORKS IN ROBLOX)
--- ============================================================
 local function b64decode(data)
     local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = string.gsub(data, '[^'..b..'=]', '')
@@ -149,9 +138,6 @@ local function b64decode(data)
     return table.concat(result)
 end
 
--- ============================================================
--- SERVER VALIDATION – CALLS YOUR /checkkey ENDPOINT
--- ============================================================
 local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key
 local success, response = pcall(function()
     return game:GetService("HttpService"):JSONDecode(game:HttpGet(url))
@@ -159,26 +145,25 @@ end)
 
 if not success then
     game:GetService("Players").LocalPlayer:Kick('Could not reach validation server')
-    return
+    return nil
 end
 
 if not response or not response.valid then
     local msg = response and response.reason or "Invalid or expired key"
     game:GetService("Players").LocalPlayer:Kick('Invalid or expired key: ' .. msg)
-    return
+    return nil
 end
 
--- ============================================================
--- DECODE AND EXECUTE THE ORIGINAL SCRIPT
--- ============================================================
 local decoded = b64decode("{encoded}")
 local fn = loadstring(decoded)
 if not fn then
     game:GetService("Players").LocalPlayer:Kick('Failed to load script: invalid code')
-    return
+    return nil
 end
 fn()
 '''
+    wrapper = wrapper.replace("{WEBSITE_DOMAIN}", WEBSITE_DOMAIN)
+    wrapper = wrapper.replace("{encoded}", encoded)
     return wrapper
 
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
@@ -203,11 +188,9 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if datetime.now(timezone.utc) > expires:
                 return await interaction.response.send_message("❌ This key has expired.", ephemeral=True)
 
-            # ---- MULTIPLE KEY SUPPORT ----
             user_data = users.get(uid)
             if user_data is None:
                 user_data = {"keys": []}
-            # ensure keys is a list
             if not isinstance(user_data.get("keys"), list):
                 user_data["keys"] = []
             if key not in user_data["keys"]:
@@ -236,7 +219,6 @@ class PanelView(discord.ui.View):
     @discord.ui.button(label="Redeem Key", emoji="🔑", style=discord.ButtonStyle.green, custom_id="redeem_btn")
     async def redeem_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            # We no longer block if already redeemed – they can redeem more keys
             await interaction.response.send_modal(RedeemModal())
         except Exception as e:
             print(f"redeem_btn error: {e}")
@@ -252,7 +234,6 @@ class PanelView(discord.ui.View):
             if not user_data or not user_data.get("keys") or len(user_data["keys"]) == 0:
                 return await interaction.response.send_message("❌ You have no redeemed keys. Redeem one first using the button above.", ephemeral=True)
 
-            # Use the most recent key
             user_key = user_data["keys"][-1]
 
             panels = load_json(PANEL_FILE)
@@ -321,7 +302,6 @@ class PanelView(discord.ui.View):
             if not user_data or not user_data.get("keys"):
                 return await interaction.response.send_message("❌ You have no redeemed keys.", ephemeral=True)
             keys = user_data["keys"]
-            # Show last redeemed key and how many total
             last_key = keys[-1]
             total = len(keys)
             embed = discord.Embed(title="📊 Your Stats", color=discord.Color.dark_purple())
