@@ -26,6 +26,7 @@ keys_col = db["keys"]
 users_col = db["users"]
 panel_col = db["panel"]
 scripts_col = db["scripts"]
+whitelist_col = db["whitelist"]
 
 def load_json(filename):
     if filename == "keys":
@@ -67,6 +68,48 @@ def save_json(filename, data):
         for key, value in data.items():
             col.insert_one({"key": key, "value": value})
 
+def load_whitelist():
+    docs = list(whitelist_col.find({}))
+    result = {}
+    for doc in docs:
+        key = f"{doc['user_id']}_{doc['panel_id']}"
+        result[key] = doc
+    return result
+
+def save_whitelist(data):
+    whitelist_col.delete_many({})
+    for key, value in data.items():
+        whitelist_col.insert_one(value)
+
+def format_days(days):
+    if days == 1:
+        return "1 day"
+    if days < 7:
+        return f"{days} days"
+    if days == 7:
+        return "1 week"
+    if days < 30:
+        weeks = days // 7
+        remaining = days % 7
+        if remaining == 0:
+            return f"{weeks} weeks"
+        return f"{weeks} weeks, {remaining} days"
+    if days == 30:
+        return "1 month"
+    if days < 365:
+        months = days // 30
+        remaining = days % 30
+        if remaining == 0:
+            return f"{months} months"
+        return f"{months} months, {remaining} days"
+    if days == 365:
+        return "1 year"
+    years = days // 365
+    remaining = days % 365
+    if remaining == 0:
+        return f"{years} years"
+    return f"{years} years, {remaining} days"
+
 KEYS_FILE = "keys"
 USERS_FILE = "users"
 PANEL_FILE = "panel"
@@ -74,6 +117,7 @@ SCRIPTS_FILE = "scripts"
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.dm_messages = True
 
 class MyBot(discord.Client):
     def __init__(self):
@@ -100,9 +144,6 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
-# ============================================================
-# OBFUSCATION – TABLE-BASED WITH HWID CHECK
-# ============================================================
 def obfuscate_script(lua_code, panel_id):
     encoded = base64.b64encode(lua_code.encode()).decode()
     
@@ -148,7 +189,6 @@ return(function(...)
     local b64 = table.concat(L)
     local decoded = b64decode(b64)
 
-    -- HWID = Roblox UserId (unique per account)
     local hwid = game.Players.LocalPlayer.UserId
 
     local url = "https://{WEBSITE_DOMAIN}/validate?key=" .. key .. "&panel={panel_id}&hwid=" .. hwid
@@ -181,10 +221,6 @@ end)()
     wrapper = wrapper.replace("{WEBSITE_DOMAIN}", WEBSITE_DOMAIN)
     wrapper = wrapper.replace("{panel_id}", panel_id)
     return wrapper
-
-# ============================================================
-# REST OF THE BOT – UNCHANGED EXCEPT NEW COMMANDS/BUTTONS
-# ============================================================
 
 def ensure_panel_guild(panel_data, guild_id):
     if panel_data and not panel_data.get("guild_id"):
@@ -230,6 +266,16 @@ def migrate_user_data(user_data, panel_id, key):
         return new_data
     else:
         return {"panels": {panel_id: {"keys": [key]}} if key else {panel_id: {"keys": []}}}
+
+def is_user_whitelisted(user_id, panel_id, whitelist_data):
+    key = f"{user_id}_{panel_id}"
+    if key in whitelist_data:
+        entry = whitelist_data[key]
+        expires = datetime.fromisoformat(entry["expires"])
+        if datetime.now(timezone.utc) > expires:
+            return False
+        return True
+    return False
 
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
@@ -399,6 +445,7 @@ class PanelView(discord.ui.View):
         try:
             users = load_json(USERS_FILE)
             keys = load_json(KEYS_FILE)
+            whitelist_data = load_whitelist()
             uid = str(interaction.user.id)
             guild_id = str(interaction.guild.id)
 
@@ -422,10 +469,29 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
+            if is_user_whitelisted(uid, panel_id, whitelist_data):
+                if not panel or "script_id" not in panel or not panel["script_id"]:
+                    return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
+
+                script_id = panel["script_id"]
+                scripts = load_json(SCRIPTS_FILE)
+                if script_id in scripts:
+                    script_url = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
+                else:
+                    script_url = f"https://api.pastes.dev/{script_id}"
+
+                loadstring_code = f'loadstring(game:HttpGet("{script_url}"))()'
+
+                embed = discord.Embed(title="📜 Your Script (Whitelisted)", color=discord.Color.green())
+                embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
+                embed.set_footer(text="You are whitelisted – no SCRIPT_KEY required!")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
             user_data = users.get(uid)
             panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
-                return await interaction.response.send_message("❌ You have no redeemed keys for this panel. Redeem one using the button above.", ephemeral=True)
+                return await interaction.response.send_message("❌ You have no redeemed keys for this panel. Redeem one using the button above, or ask an admin to whitelist you.", ephemeral=True)
 
             active_keys = [k for k in panel_keys if k in keys and keys[k]["active"] and keys[k].get("guild_id") == guild_id and keys[k].get("panel_id") == panel_id]
             if not active_keys:
@@ -441,7 +507,7 @@ class PanelView(discord.ui.View):
             if script_id in scripts:
                 script_url = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
             else:
-                script_url = f"https://api.pastes.dev/{script_id}"  # fallback
+                script_url = f"https://api.pastes.dev/{script_id}"
 
             loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
 
@@ -459,6 +525,7 @@ class PanelView(discord.ui.View):
         try:
             users = load_json(USERS_FILE)
             keys = load_json(KEYS_FILE)
+            whitelist_data = load_whitelist()
             uid = str(interaction.user.id)
             guild_id = str(interaction.guild.id)
 
@@ -482,10 +549,35 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
+            if is_user_whitelisted(uid, panel_id, whitelist_data):
+                if not panel or "role_id" not in panel:
+                    return await interaction.response.send_message("⚠️ No role has been configured for this panel. Contact an admin.", ephemeral=True)
+
+                role = interaction.guild.get_role(int(panel["role_id"]))
+                if not role:
+                    return await interaction.response.send_message("⚠️ The configured role no longer exists. Contact an admin.", ephemeral=True)
+
+                bot_member = interaction.guild.me
+                if not bot_member.guild_permissions.manage_roles:
+                    return await interaction.response.send_message("❌ I don't have permission to manage roles. Please give me the 'Manage Roles' permission.", ephemeral=True)
+
+                if role >= bot_member.top_role:
+                    return await interaction.response.send_message("❌ I cannot assign this role because it is above or equal to my highest role. Please move my role higher.", ephemeral=True)
+
+                if role in interaction.user.roles:
+                    return await interaction.response.send_message("✅ You already have this role.", ephemeral=True)
+
+                await interaction.user.add_roles(role)
+                embed = discord.Embed(title="✅ Role Assigned!", color=discord.Color.green())
+                embed.add_field(name="Role", value=role.mention, inline=False)
+                embed.add_field(name="Note", value="You are whitelisted – no key required.", inline=False)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
             user_data = users.get(uid)
             panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
-                return await interaction.response.send_message("❌ You must redeem a key for this panel first.", ephemeral=True)
+                return await interaction.response.send_message("❌ You must redeem a key for this panel first, or ask an admin to whitelist you.", ephemeral=True)
 
             active_keys = [k for k in panel_keys if k in keys and keys[k]["active"] and keys[k].get("guild_id") == guild_id and keys[k].get("panel_id") == panel_id]
             if not active_keys:
@@ -552,12 +644,10 @@ class PanelView(discord.ui.View):
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel.", ephemeral=True)
 
-            # Filter active keys
             active_keys = [k for k in panel_keys if k in keys and keys[k]["active"] and keys[k].get("guild_id") == guild_id and keys[k].get("panel_id") == panel_id]
             if not active_keys:
                 return await interaction.response.send_message("❌ No active keys found to reset HWID.", ephemeral=True)
 
-            # Reset HWID for all active keys
             reset_count = 0
             for k in active_keys:
                 if "hwid" in keys[k]:
@@ -693,6 +783,9 @@ async def genkey(interaction: discord.Interaction, panel: str, days: int):
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("No permission.", ephemeral=True)
 
+        if days < 1:
+            return await interaction.response.send_message("❌ Days must be at least 1.", ephemeral=True)
+
         panels = load_json(PANEL_FILE)
         panel_id, panel_data = find_panel(panels, panel)
 
@@ -718,11 +811,19 @@ async def genkey(interaction: discord.Interaction, panel: str, days: int):
             "owner_name": interaction.user.name,
             "created_at": now.isoformat(),
             "guild_id": guild_id,
-            "panel_id": panel_id,
-            # hwid is not set initially
+            "panel_id": panel_id
         }
         save_json(KEYS_FILE, keys)
-        await interaction.response.send_message(f"✅ Key Generated for panel **{panel_data.get('title', 'Unknown')}** :\n`{user_key}`\nValid: {days} days", ephemeral=True)
+
+        time_display = format_days(days)
+
+        embed = discord.Embed(title="✅ Key Generated!", color=discord.Color.green())
+        embed.add_field(name="Key", value=f"`{user_key}`", inline=False)
+        embed.add_field(name="Panel", value=panel_data.get('title', 'Unknown'), inline=False)
+        embed.add_field(name="Valid For", value=time_display, inline=False)
+        embed.add_field(name="Expires", value=expires.strftime("%Y-%m-%d %H:%M UTC"), inline=False)
+        embed.set_footer(text="This key can be redeemed using the 'Redeem Key' button on the panel.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     except Exception as e:
         print(f"genkey error: {e}")
         traceback.print_exc()
@@ -849,6 +950,218 @@ async def reset_hwid(interaction: discord.Interaction, key: str):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
+@client.tree.command(name="whitelist", description="Whitelist a user for a specific panel (Admin only)")
+@app_commands.describe(panel="Channel ID or Message ID of the panel", user="User to whitelist", expiration="Number of days until whitelist expires")
+async def whitelist(interaction: discord.Interaction, panel: str, user: discord.User, expiration: int):
+    try:
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("No permission.", ephemeral=True)
+
+        if expiration < 1:
+            return await interaction.response.send_message("❌ Expiration must be at least 1 day.", ephemeral=True)
+
+        panels = load_json(PANEL_FILE)
+        panel_id, panel_data = find_panel(panels, panel)
+
+        if not panel_data:
+            return await interaction.response.send_message(f"❌ Panel not found. Use the channel ID or message ID of the panel.", ephemeral=True)
+
+        guild_id = str(interaction.guild.id)
+        if ensure_panel_guild(panel_data, guild_id):
+            panels[panel_id] = panel_data
+            save_json(PANEL_FILE, panels)
+
+        if panel_data.get("guild_id") != guild_id:
+            return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+
+        # Generate a key for the user
+        user_key = generate_user_key()
+        keys = load_json(KEYS_FILE)
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(days=expiration)
+        keys[user_key] = {
+            "active": True,
+            "expires": expires.isoformat(),
+            "owner": str(user.id),
+            "owner_name": user.name,
+            "created_at": now.isoformat(),
+            "guild_id": guild_id,
+            "panel_id": panel_id
+        }
+        save_json(KEYS_FILE, keys)
+
+        # Auto-redeem the key for the user
+        users = load_json(USERS_FILE)
+        uid = str(user.id)
+        user_data = users.get(uid)
+        if user_data is None:
+            user_data = {"panels": {}}
+        elif not isinstance(user_data, dict):
+            user_data = migrate_user_data(user_data, panel_id, user_key)
+        elif "panels" not in user_data:
+            user_data = migrate_user_data(user_data, panel_id, user_key)
+        else:
+            if panel_id not in user_data["panels"]:
+                user_data["panels"][panel_id] = {"keys": []}
+            if user_key not in user_data["panels"][panel_id]["keys"]:
+                user_data["panels"][panel_id]["keys"].append(user_key)
+        users[uid] = user_data
+        save_json(USERS_FILE, users)
+
+        # Add to whitelist
+        whitelist_data = load_whitelist()
+        wl_key = f"{uid}_{panel_id}"
+        whitelist_data[wl_key] = {
+            "user_id": uid,
+            "user_name": user.name,
+            "panel_id": panel_id,
+            "panel_title": panel_data.get("title", "Unknown"),
+            "guild_id": guild_id,
+            "created_at": now.isoformat(),
+            "expires": expires.isoformat()
+        }
+        save_whitelist(whitelist_data)
+
+        time_display = format_days(expiration)
+        embed = discord.Embed(title="✅ User Whitelisted!", color=discord.Color.green())
+        embed.add_field(name="User", value=user.mention, inline=False)
+        embed.add_field(name="Panel", value=panel_data.get("title", "Unknown"), inline=False)
+        embed.add_field(name="Key Generated", value=f"`{user_key}`", inline=False)
+        embed.add_field(name="Valid For", value=time_display, inline=False)
+        embed.add_field(name="Expires", value=expires.strftime("%Y-%m-%d %H:%M UTC"), inline=False)
+        embed.set_footer(text="The user has been DMed with the key and instructions.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        # Send DM to user
+        try:
+            dm_embed = discord.Embed(
+                title="✅ You've Been Whitelisted!",
+                color=discord.Color.green()
+            )
+            dm_embed.add_field(
+                name="Panel",
+                value=panel_data.get("title", "Unknown"),
+                inline=False
+            )
+            dm_embed.add_field(
+                name="Key (Backup)",
+                value=f"`{user_key}`",
+                inline=False
+            )
+            dm_embed.add_field(
+                name="Instructions",
+                value=(
+                    "You are now whitelisted for this panel. "
+                    "You **do not need** to use the key. "
+                    "Just click the **'Get Script'** button on the panel to get the script."
+                ),
+                inline=False
+            )
+            dm_embed.add_field(
+                name="Expires",
+                value=expires.strftime("%Y-%m-%d %H:%M UTC"),
+                inline=False
+            )
+            dm_embed.set_footer(text="You can always use the key if you want, but it's not required.")
+            await user.send(embed=dm_embed)
+        except discord.Forbidden:
+            # User has DMs disabled
+            pass
+    except Exception as e:
+        print(f"whitelist error: {e}")
+        traceback.print_exc()
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+@client.tree.command(name="remove_whitelist", description="Remove a user from the whitelist (Admin only)")
+@app_commands.describe(panel="Channel ID or Message ID of the panel", user="User to remove from whitelist")
+async def remove_whitelist(interaction: discord.Interaction, panel: str, user: discord.User):
+    try:
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("No permission.", ephemeral=True)
+
+        panels = load_json(PANEL_FILE)
+        panel_id, panel_data = find_panel(panels, panel)
+
+        if not panel_data:
+            return await interaction.response.send_message(f"❌ Panel not found.", ephemeral=True)
+
+        guild_id = str(interaction.guild.id)
+        if panel_data.get("guild_id") != guild_id:
+            return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+
+        whitelist_data = load_whitelist()
+        key = f"{str(user.id)}_{panel_id}"
+        if key not in whitelist_data:
+            return await interaction.response.send_message(f"❌ User {user.mention} is not whitelisted for this panel.", ephemeral=True)
+
+        del whitelist_data[key]
+        save_whitelist(whitelist_data)
+
+        embed = discord.Embed(title="✅ User Removed from Whitelist!", color=discord.Color.green())
+        embed.add_field(name="User", value=user.mention, inline=False)
+        embed.add_field(name="Panel", value=panel_data.get("title", "Unknown"), inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    except Exception as e:
+        print(f"remove_whitelist error: {e}")
+        traceback.print_exc()
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+@client.tree.command(name="view_whitelist", description="View all whitelisted users for a panel (Admin only)")
+@app_commands.describe(panel="Channel ID or Message ID of the panel")
+async def view_whitelist(interaction: discord.Interaction, panel: str):
+    try:
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("No permission.", ephemeral=True)
+
+        panels = load_json(PANEL_FILE)
+        panel_id, panel_data = find_panel(panels, panel)
+
+        if not panel_data:
+            return await interaction.response.send_message(f"❌ Panel not found.", ephemeral=True)
+
+        guild_id = str(interaction.guild.id)
+        if panel_data.get("guild_id") != guild_id:
+            return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+
+        whitelist_data = load_whitelist()
+        panel_whitelist = {}
+        for key, value in whitelist_data.items():
+            if value.get("panel_id") == panel_id:
+                panel_whitelist[key] = value
+
+        if not panel_whitelist:
+            embed = discord.Embed(title="📋 Whitelist", description="No users are whitelisted for this panel.", color=discord.Color.dark_purple())
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        lines = []
+        for key, value in panel_whitelist.items():
+            expires = datetime.fromisoformat(value["expires"])
+            status = "🟢 Active" if expires > datetime.now(timezone.utc) else "🔴 Expired"
+            user_name = value.get("user_name", "Unknown")
+            lines.append(f"**{user_name}** — {status} — expires: {value['expires']}")
+
+        chunks = []
+        current = ""
+        for line in lines:
+            if len(current) + len(line) + 1 > 1900:
+                chunks.append(current)
+                current = ""
+            current += line + "\n"
+        if current:
+            chunks.append(current)
+
+        if not chunks:
+            embed = discord.Embed(title="📋 Whitelist", description="No users found.", color=discord.Color.dark_purple())
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        await interaction.response.send_message(f"**Whitelist for {panel_data.get('title', 'Unknown')}:**\n{chunks[0]}", ephemeral=True)
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk, ephemeral=True)
+    except Exception as e:
+        print(f"view_whitelist error: {e}")
+        traceback.print_exc()
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
 @client.tree.command(name="add_script", description="Add a Lua script file to a specific panel (Admin only)")
 @app_commands.describe(message_id="Message ID of the panel embed (REQUIRED – right-click the panel message and Copy ID)", file="Upload .lua or .txt file")
 @app_commands.rename(message_id="message-id")
@@ -882,7 +1195,6 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         content = await file.read()
         lua_code = content.decode("utf-8")
 
-        # Use the new obfuscation (with HWID)
         obfuscated_code = obfuscate_script(lua_code, panel_key)
 
         script_id = panel.get("script_id")
@@ -964,10 +1276,8 @@ def validate_hwid():
         if datetime.now(timezone.utc) > expires:
             return {"valid": False, "reason": "Key expired"}
 
-        # HWID check
         stored_hwid = keys[key].get("hwid")
         if stored_hwid is None:
-            # First time – store HWID
             keys[key]["hwid"] = hwid
             save_json(KEYS_FILE, keys)
             return {"valid": True, "reason": "HWID stored successfully"}
