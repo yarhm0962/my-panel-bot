@@ -733,9 +733,13 @@ async def on_ready():
             view = PanelView(channel_id, message_id)
             client.add_view(view)
 
-@client.tree.command(name="create_panel", description="Create control panel")
-@app_commands.describe(script_title="Embed title", role="Role to assign when user clicks 'Get Role'", description="Embed description (optional)")
-@app_commands.rename(script_title="script-title")
+# ============================================================
+# COMMAND DEFINITIONS WITH SPACES
+# ============================================================
+
+@client.tree.command(name="create panel", description="Create control panel")
+@app_commands.describe(**{"script-title": "Embed title", "role": "Role to assign when user clicks 'Get Role'", "description": "Embed description (optional)"})
+@app_commands.rename(**{"script-title": "script_title"})
 async def create_panel(interaction: discord.Interaction, script_title: str, role: discord.Role, description: str = None):
     try:
         if not interaction.user.guild_permissions.administrator:
@@ -776,15 +780,20 @@ async def create_panel(interaction: discord.Interaction, script_title: str, role
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="genkey", description="Generate a new key for a specific panel")
-@app_commands.describe(panel="Channel ID or Message ID of the panel", days="Days active")
-async def genkey(interaction: discord.Interaction, panel: str, days: int):
+@client.tree.command(name="generate key", description="Generate one or more keys for a specific panel")
+@app_commands.describe(panel="Channel ID or Message ID of the panel", days="Days active", amount="Number of keys to generate (max 50, default 1)")
+async def genkey(interaction: discord.Interaction, panel: str, days: int, amount: int = 1):
     try:
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("No permission.", ephemeral=True)
 
         if days < 1:
             return await interaction.response.send_message("❌ Days must be at least 1.", ephemeral=True)
+
+        if amount < 1:
+            amount = 1
+        elif amount > 50:
+            amount = 50
 
         panels = load_json(PANEL_FILE)
         panel_id, panel_data = find_panel(panels, panel)
@@ -800,36 +809,54 @@ async def genkey(interaction: discord.Interaction, panel: str, days: int):
         if panel_data.get("guild_id") != guild_id:
             return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
 
-        user_key = generate_user_key()
         keys = load_json(KEYS_FILE)
         now = datetime.now(timezone.utc)
         expires = now + timedelta(days=days)
-        keys[user_key] = {
-            "active": True,
-            "expires": expires.isoformat(),
-            "owner": str(interaction.user.id),
-            "owner_name": interaction.user.name,
-            "created_at": now.isoformat(),
-            "guild_id": guild_id,
-            "panel_id": panel_id
-        }
+
+        generated_keys = []
+        for _ in range(amount):
+            user_key = generate_user_key()
+            keys[user_key] = {
+                "active": True,
+                "expires": expires.isoformat(),
+                "owner": str(interaction.user.id),
+                "owner_name": interaction.user.name,
+                "created_at": now.isoformat(),
+                "guild_id": guild_id,
+                "panel_id": panel_id
+            }
+            generated_keys.append(user_key)
+
         save_json(KEYS_FILE, keys)
 
         time_display = format_days(days)
+        key_list = "\n".join([f"`{k}`" for k in generated_keys])
 
-        embed = discord.Embed(title="✅ Key Generated!", color=discord.Color.green())
-        embed.add_field(name="Key", value=f"`{user_key}`", inline=False)
-        embed.add_field(name="Panel", value=panel_data.get('title', 'Unknown'), inline=False)
-        embed.add_field(name="Valid For", value=time_display, inline=False)
-        embed.add_field(name="Expires", value=expires.strftime("%Y-%m-%d %H:%M UTC"), inline=False)
-        embed.set_footer(text="This key can be redeemed using the 'Redeem Key' button on the panel.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # Build embed(s) – up to 10 keys per embed
+        embeds = []
+        chunk_size = 10
+        for i in range(0, len(generated_keys), chunk_size):
+            chunk = generated_keys[i:i+chunk_size]
+            embed = discord.Embed(
+                title=f"✅ {len(generated_keys)} Key(s) Generated!",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Panel", value=panel_data.get('title', 'Unknown'), inline=False)
+            embed.add_field(name="Valid For", value=time_display, inline=False)
+            embed.add_field(name="Expires", value=expires.strftime("%Y-%m-%d %H:%M UTC"), inline=False)
+            embed.add_field(name="Keys", value="\n".join([f"`{k}`" for k in chunk]), inline=False)
+            embed.set_footer(text=f"Page {i//chunk_size + 1}/{(len(generated_keys)-1)//chunk_size + 1}")
+            embeds.append(embed)
+
+        await interaction.response.send_message(embed=embeds[0], ephemeral=True)
+        for embed in embeds[1:]:
+            await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as e:
         print(f"genkey error: {e}")
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="view_all_keys", description="View all keys (Admin only) for this server")
+@client.tree.command(name="view all keys", description="View all keys (Admin only) for this server")
 async def view_all_keys(interaction: discord.Interaction):
     try:
         if not interaction.user.guild_permissions.administrator:
@@ -887,7 +914,7 @@ async def view_all_keys(interaction: discord.Interaction):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="delete_keys", description="Delete one or more keys (Admin only)")
+@client.tree.command(name="delete keys", description="Delete one or more keys (Admin only)")
 @app_commands.describe(key="Specific key to delete", user="Delete all keys for this user")
 async def delete_keys(interaction: discord.Interaction, key: str = None, user: discord.User = None):
     try:
@@ -925,7 +952,7 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="reset_hwid", description="Reset HWID for a specific key (Admin only)")
+@client.tree.command(name="reset hwid", description="Reset HWID for a specific key (Admin only)")
 @app_commands.describe(key="The key to reset HWID for")
 async def reset_hwid(interaction: discord.Interaction, key: str):
     try:
@@ -1065,14 +1092,13 @@ async def whitelist(interaction: discord.Interaction, panel: str, user: discord.
             dm_embed.set_footer(text="You can always use the key if you want, but it's not required.")
             await user.send(embed=dm_embed)
         except discord.Forbidden:
-            # User has DMs disabled
             pass
     except Exception as e:
         print(f"whitelist error: {e}")
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="remove_whitelist", description="Remove a user from the whitelist (Admin only)")
+@client.tree.command(name="remove whitelist", description="Remove a user from the whitelist (Admin only)")
 @app_commands.describe(panel="Channel ID or Message ID of the panel", user="User to remove from whitelist")
 async def remove_whitelist(interaction: discord.Interaction, panel: str, user: discord.User):
     try:
@@ -1106,7 +1132,7 @@ async def remove_whitelist(interaction: discord.Interaction, panel: str, user: d
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="view_whitelist", description="View all whitelisted users for a panel (Admin only)")
+@client.tree.command(name="view whitelist", description="View all whitelisted users for a panel (Admin only)")
 @app_commands.describe(panel="Channel ID or Message ID of the panel")
 async def view_whitelist(interaction: discord.Interaction, panel: str):
     try:
@@ -1162,9 +1188,9 @@ async def view_whitelist(interaction: discord.Interaction, panel: str):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="add_script", description="Add a Lua script file to a specific panel (Admin only)")
-@app_commands.describe(message_id="Message ID of the panel embed (REQUIRED – right-click the panel message and Copy ID)", file="Upload .lua or .txt file")
-@app_commands.rename(message_id="message-id")
+@client.tree.command(name="add script", description="Add Lua script file to a panel (Admin only)")
+@app_commands.describe(**{"message-id": "Message ID of the panel embed (REQUIRED – right-click the panel message and Copy ID)", "file": "Upload .lua or .txt file"})
+@app_commands.rename(**{"message-id": "message_id"})
 async def add_script(interaction: discord.Interaction, message_id: str, file: discord.Attachment):
     try:
         if not interaction.user.guild_permissions.administrator:
