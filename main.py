@@ -46,19 +46,8 @@ def load_json(filename):
         if filename == "panel":
             result[doc['_id']] = doc
         else:
-            if filename == "users":
-                value = doc['value']
-                if isinstance(value, str):
-                    value = {"panels": {}}
-                elif isinstance(value, dict):
-                    if "panels" not in value:
-                        value["panels"] = {}
-                else:
-                    value = {"panels": {}}
-                result[doc['key']] = value
-            else:
-                if 'key' in doc and 'value' in doc:
-                    result[doc['key']] = doc['value']
+            # For users, store the raw value without any conversion
+            result[doc['key']] = doc['value']
     return result
 
 def save_json(filename, data):
@@ -178,13 +167,14 @@ end
     return wrapper
 
 def upload_to_pastes(lua_code):
-    """Upload to pastes.dev with retry. Returns paste_id or None."""
+    """Upload to pastes.dev. Returns paste_id or None."""
     headers = {
         "User-Agent": "M1rage-Bot/1.0",
         "Content-Type": "text/plain"
     }
     for attempt in range(2):
         try:
+            print(f"[pastes.dev] Attempt {attempt+1}: Uploading {len(lua_code)} bytes...")
             response = requests.post(
                 "https://api.pastes.dev/post",
                 data=lua_code,
@@ -192,15 +182,34 @@ def upload_to_pastes(lua_code):
                 timeout=10,
                 allow_redirects=True
             )
+            print(f"[pastes.dev] Response status: {response.status_code}")
+            print(f"[pastes.dev] Response body: {response.text[:200]}")
             if response.status_code == 200:
+                try:
+                    data = response.json()
+                    paste_id = data.get("key")
+                    if paste_id:
+                        print(f"[pastes.dev] Success! Paste ID: {paste_id}")
+                        return paste_id
+                except:
+                    pass
+                # Fallback: if response is plain text
                 paste_id = response.text.strip()
                 if paste_id and len(paste_id) > 0 and not paste_id.startswith('<!DOCTYPE'):
+                    print(f"[pastes.dev] Success! Paste ID: {paste_id}")
                     return paste_id
-            print(f"pastes.dev upload attempt {attempt+1} failed: {response.status_code} - {response.text[:100]}")
+            else:
+                print(f"[pastes.dev] HTTP error: {response.status_code}")
+        except requests.exceptions.Timeout:
+            print(f"[pastes.dev] Attempt {attempt+1}: Timeout")
+        except requests.exceptions.ConnectionError as e:
+            print(f"[pastes.dev] Attempt {attempt+1}: Connection error: {e}")
         except Exception as e:
-            print(f"pastes.dev upload attempt {attempt+1} error: {e}")
+            print(f"[pastes.dev] Attempt {attempt+1}: Unexpected error: {e}")
+            traceback.print_exc()
         if attempt == 0:
             time.sleep(1)
+    print("[pastes.dev] All attempts failed. Using fallback storage.")
     return None
 
 def ensure_panel_guild(panel_data, guild_id):
@@ -219,6 +228,44 @@ def find_panel(panels, lookup_id):
         if str(pid) == lookup_id:
             return pid, pdata
     return None, None
+
+def get_user_keys_for_panel(user_data, panel_id, keys_db):
+    """Get list of active keys for a user/panel, handling old data formats."""
+    # If user_data is None or not a dict, return empty
+    if not user_data or not isinstance(user_data, dict):
+        return []
+    # If it's the new format with "panels"
+    if "panels" in user_data:
+        panel_entry = user_data["panels"].get(panel_id)
+        if panel_entry and isinstance(panel_entry, dict):
+            return panel_entry.get("keys", [])
+        return []
+    # Old format: could be a dict with "key" or a string
+    if "key" in user_data:
+        # Single key stored as {"key": "..."}
+        return [user_data["key"]] if user_data["key"] in keys_db else []
+    # Could be a string directly (if user_data is a string)
+    return []
+
+def migrate_user_data(user_data, panel_id, key):
+    """Convert old user data to new panel structure and add key."""
+    if isinstance(user_data, str):
+        # Old user_data was just a string key
+        old_key = user_data
+        new_data = {"panels": {panel_id: {"keys": [old_key]}}}
+        if key and key != old_key:
+            new_data["panels"][panel_id]["keys"].append(key)
+        return new_data
+    elif isinstance(user_data, dict) and "key" in user_data:
+        # Old format: {"key": "..."}
+        old_key = user_data["key"]
+        new_data = {"panels": {panel_id: {"keys": [old_key]}}}
+        if key and key != old_key:
+            new_data["panels"][panel_id]["keys"].append(key)
+        return new_data
+    else:
+        # Empty or unknown: create new
+        return {"panels": {panel_id: {"keys": [key]}} if key else {panel_id: {"keys": []}}}
 
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
@@ -262,17 +309,26 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if datetime.now(timezone.utc) > expires:
                 return await interaction.response.send_message("❌ This key has expired.", ephemeral=True)
 
+            # Get user data, handle old formats
             user_data = users.get(uid)
-            if user_data is None or not isinstance(user_data, dict):
+            # If user_data is old format, we'll convert it during migration
+            if user_data is None:
                 user_data = {"panels": {}}
-            if "panels" not in user_data:
-                user_data["panels"] = {}
-            if panel_id not in user_data["panels"]:
-                user_data["panels"][panel_id] = {"keys": []}
-            if key not in user_data["panels"][panel_id]["keys"]:
-                user_data["panels"][panel_id]["keys"].append(key)
+            elif not isinstance(user_data, dict):
+                # It's a string (old format) – migrate
+                user_data = migrate_user_data(user_data, panel_id, key)
+            elif "panels" not in user_data:
+                # Old dict format (could have "key")
+                user_data = migrate_user_data(user_data, panel_id, key)
             else:
-                return await interaction.response.send_message("✅ You already redeemed this key for this panel.", ephemeral=True)
+                # New format – ensure panel entry exists
+                if panel_id not in user_data["panels"]:
+                    user_data["panels"][panel_id] = {"keys": []}
+                # Check if key already redeemed
+                if key in user_data["panels"][panel_id]["keys"]:
+                    return await interaction.response.send_message("✅ You already redeemed this key for this panel.", ephemeral=True)
+                user_data["panels"][panel_id]["keys"].append(key)
+
             users[uid] = user_data
             save_json(USERS_FILE, users)
 
@@ -403,13 +459,14 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            user_data = users.get(uid, {})
-            if not isinstance(user_data, dict):
-                user_data = {}
-            panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
+            # Get user data, may be old format
+            user_data = users.get(uid)
+            # Use helper to get keys
+            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel. Redeem one using the button above.", ephemeral=True)
 
+            # Filter active keys
             active_keys = [k for k in panel_keys if k in keys and keys[k]["active"] and keys[k].get("guild_id") == guild_id and keys[k].get("panel_id") == panel_id]
             if not active_keys:
                 return await interaction.response.send_message("❌ All your keys for this panel are invalid or expired. Please redeem a new key.", ephemeral=True)
@@ -420,7 +477,6 @@ class PanelView(discord.ui.View):
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
             script_id = panel["script_id"]
-            # Determine storage: if script exists in MongoDB, use internal route; else use pastes.dev
             scripts = load_json(SCRIPTS_FILE)
             if script_id in scripts:
                 script_url = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
@@ -466,10 +522,8 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            user_data = users.get(uid, {})
-            if not isinstance(user_data, dict):
-                user_data = {}
-            panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
+            user_data = users.get(uid)
+            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
                 return await interaction.response.send_message("❌ You must redeem a key for this panel first.", ephemeral=True)
 
@@ -546,10 +600,8 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            user_data = users.get(uid, {})
-            if not isinstance(user_data, dict):
-                user_data = {}
-            panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
+            user_data = users.get(uid)
+            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel.", ephemeral=True)
 
@@ -802,7 +854,6 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
 
         obfuscated_code = obfuscate_script(lua_code, panel_key)
 
-        # Try to upload to pastes.dev
         paste_id = upload_to_pastes(obfuscated_code)
         if paste_id:
             script_id = paste_id
@@ -812,7 +863,6 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
             save_json(PANEL_FILE, panels)
             direct_link = f"https://api.pastes.dev/{paste_id}"
         else:
-            # Fallback: store in MongoDB
             script_id = generate_script_id()
             scripts = load_json(SCRIPTS_FILE)
             scripts[script_id] = obfuscated_code
