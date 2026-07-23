@@ -5,6 +5,7 @@ import random
 import os
 import base64
 import requests
+import re
 from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, request
 import threading
@@ -46,7 +47,6 @@ def load_json(filename):
         if filename == "panel":
             result[doc['_id']] = doc
         else:
-            # For users, store the raw value without any conversion
             result[doc['key']] = doc['value']
     return result
 
@@ -103,113 +103,82 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
+def minify_lua(code):
+    """Remove comments and extra whitespace from Lua code."""
+    # Remove single-line comments
+    code = re.sub(r'--[^\n]*', '', code)
+    # Remove multi-line comments
+    code = re.sub(r'--\[\[.*?\]\]', '', code, flags=re.DOTALL)
+    # Remove extra whitespace
+    code = re.sub(r'\s+', ' ', code)
+    # Remove spaces around operators
+    code = re.sub(r'\s*=\s*', '=', code)
+    code = re.sub(r'\s*\.\.\s*', '..', code)
+    code = re.sub(r'\s*\.\.\.\s*', '...', code)
+    code = re.sub(r'\s*\+\s*', '+', code)
+    code = re.sub(r'\s*-\s*', '-', code)
+    code = re.sub(r'\s*\*\s*', '*', code)
+    code = re.sub(r'\s*/\s*', '/', code)
+    code = re.sub(r'\s*,\s*', ',', code)
+    code = re.sub(r'\s*;\s*', ';', code)
+    code = re.sub(r'\s*\(\s*', '(', code)
+    code = re.sub(r'\s*\)\s*', ')', code)
+    code = re.sub(r'\s*{\s*', '{', code)
+    code = re.sub(r'\s*}\s*', '}', code)
+    # Remove multiple spaces
+    code = re.sub(r' +', ' ', code)
+    return code.strip()
+
 def obfuscate_script(lua_code, panel_id):
     encoded = base64.b64encode(lua_code.encode()).decode()
     wrapper = f'''
-local key = _G.SCRIPT_KEY or getgenv().SCRIPT_KEY
-if not key or key == "" then
-    game:GetService("Players").LocalPlayer:Kick('Pls Put Your _G.SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
-    return nil
-end
-
-local function b64decode(data)
-    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-    data = string.gsub(data, '[^'..b..'=]', '')
-    local result = {{}}
-    for i = 1, #data, 4 do
-        local chunk = data:sub(i, i+3)
-        local a, c, d, e = chunk:byte(1, 4)
-        local x = (a and a ~= 61) and (b:find(string.char(a), 1, true) - 1) or 0
-        local y = (c and c ~= 61) and (b:find(string.char(c), 1, true) - 1) or 0
-        local z = (d and d ~= 61) and (b:find(string.char(d), 1, true) - 1) or 0
-        local w = (e and e ~= 61) and (b:find(string.char(e), 1, true) - 1) or 0
-        local n1 = (x * 4) + math.floor(y / 16)
-        local n2 = ((y % 16) * 16) + math.floor(z / 4)
-        local n3 = ((z % 4) * 64) + w
-        table.insert(result, string.char(n1))
-        if c and c ~= 61 then table.insert(result, string.char(n2)) end
-        if d and d ~= 61 then table.insert(result, string.char(n3)) end
-    end
-    return table.concat(result)
-end
-
-local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key .. "&panel={panel_id}"
-local success, response = pcall(function()
-    return game:GetService("HttpService"):JSONDecode(game:HttpGet(url))
-end)
-
-if not success then
-    game:GetService("Players").LocalPlayer:Kick('Could not reach validation server')
-    return nil
-end
-
-if not response or not response.valid then
-    local msg = response and response.reason or "Invalid or expired key"
-    game:GetService("Players").LocalPlayer:Kick('Invalid or expired key: ' .. msg)
-    return nil
-end
-
-local decoded = b64decode("{encoded}")
-local fn = loadstring(decoded)
-if not fn then
-    game:GetService("Players").LocalPlayer:Kick('Failed to load script: invalid code')
-    return nil
-end
-fn()
-_G.SCRIPT_KEY = nil
-if getgenv then
-    getgenv().SCRIPT_KEY = nil
-end
+local a = _G.SCRIPT_KEY or getgenv().SCRIPT_KEY
+if not a or a == "" then game:GetService("Players").LocalPlayer:Kick('Please set _G.SCRIPT_KEY')return nil end
+local function b(d)local c='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'d=string.gsub(d,'[^'..c..'=]','')local r={{}}for i=1,#d,4 do local chunk=d:sub(i,i+3)local a1,a2,a3,a4=chunk:byte(1,4)local x=(a1 and a1~=61)and(c:find(string.char(a1),1,true)-1)or 0 local y=(a2 and a2~=61)and(c:find(string.char(a2),1,true)-1)or 0 local z=(a3 and a3~=61)and(c:find(string.char(a3),1,true)-1)or 0 local w=(a4 and a4~=61)and(c:find(string.char(a4),1,true)-1)or 0 local n1=(x*4)+math.floor(y/16)local n2=((y%16)*16)+math.floor(z/4)local n3=((z%4)*64)+w table.insert(r,string.char(n1))if a2 and a2~=61 then table.insert(r,string.char(n2))end if a3 and a3~=61 then table.insert(r,string.char(n3))end end return table.concat(r)end
+local u="https://{WEBSITE_DOMAIN}/checkkey?key="..a.."&panel={panel_id}"local s,r=pcall(function()return game:GetService("HttpService"):JSONDecode(game:HttpGet(u))end)if not s then game:GetService("Players").LocalPlayer:Kick('Server unreachable')return nil end if not r or not r.valid then local m=r and r.reason or "Invalid key"game:GetService("Players").LocalPlayer:Kick('Invalid or expired key: '..m)return nil end
+local d=b("{encoded}")local f=loadstring(d)if not f then game:GetService("Players").LocalPlayer:Kick('Invalid script')return nil end f()
+_G.SCRIPT_KEY=nil if getgenv then getgenv().SCRIPT_KEY=nil end
 '''
+    # Replace placeholders
     wrapper = wrapper.replace("{WEBSITE_DOMAIN}", WEBSITE_DOMAIN)
     wrapper = wrapper.replace("{encoded}", encoded)
     wrapper = wrapper.replace("{panel_id}", panel_id)
+    # Minify to hide it further
+    wrapper = minify_lua(wrapper)
     return wrapper
 
 def upload_to_pastes(lua_code):
-    """Upload to pastes.dev. Returns paste_id or None."""
+    """Upload to pastes.dev with proper JSON handling. Returns paste_id or None."""
     headers = {
         "User-Agent": "M1rage-Bot/1.0",
         "Content-Type": "text/plain"
     }
-    for attempt in range(2):
+    for attempt in range(3):
         try:
-            print(f"[pastes.dev] Attempt {attempt+1}: Uploading {len(lua_code)} bytes...")
             response = requests.post(
                 "https://api.pastes.dev/post",
-                data=lua_code,
+                data=lua_code.encode('utf-8'),
                 headers=headers,
-                timeout=10,
+                timeout=15,
                 allow_redirects=True
             )
-            print(f"[pastes.dev] Response status: {response.status_code}")
-            print(f"[pastes.dev] Response body: {response.text[:200]}")
             if response.status_code == 200:
+                # Try to parse as JSON first
                 try:
                     data = response.json()
                     paste_id = data.get("key")
                     if paste_id:
-                        print(f"[pastes.dev] Success! Paste ID: {paste_id}")
                         return paste_id
                 except:
                     pass
-                # Fallback: if response is plain text
+                # Fallback: plain text response
                 paste_id = response.text.strip()
                 if paste_id and len(paste_id) > 0 and not paste_id.startswith('<!DOCTYPE'):
-                    print(f"[pastes.dev] Success! Paste ID: {paste_id}")
                     return paste_id
-            else:
-                print(f"[pastes.dev] HTTP error: {response.status_code}")
-        except requests.exceptions.Timeout:
-            print(f"[pastes.dev] Attempt {attempt+1}: Timeout")
-        except requests.exceptions.ConnectionError as e:
-            print(f"[pastes.dev] Attempt {attempt+1}: Connection error: {e}")
-        except Exception as e:
-            print(f"[pastes.dev] Attempt {attempt+1}: Unexpected error: {e}")
-            traceback.print_exc()
-        if attempt == 0:
             time.sleep(1)
-    print("[pastes.dev] All attempts failed. Using fallback storage.")
+        except Exception as e:
+            print(f"pastes.dev error (attempt {attempt+1}): {e}")
+            time.sleep(1)
     return None
 
 def ensure_panel_guild(panel_data, guild_id):
@@ -230,41 +199,31 @@ def find_panel(panels, lookup_id):
     return None, None
 
 def get_user_keys_for_panel(user_data, panel_id, keys_db):
-    """Get list of active keys for a user/panel, handling old data formats."""
-    # If user_data is None or not a dict, return empty
     if not user_data or not isinstance(user_data, dict):
         return []
-    # If it's the new format with "panels"
     if "panels" in user_data:
         panel_entry = user_data["panels"].get(panel_id)
         if panel_entry and isinstance(panel_entry, dict):
             return panel_entry.get("keys", [])
         return []
-    # Old format: could be a dict with "key" or a string
     if "key" in user_data:
-        # Single key stored as {"key": "..."}
         return [user_data["key"]] if user_data["key"] in keys_db else []
-    # Could be a string directly (if user_data is a string)
     return []
 
 def migrate_user_data(user_data, panel_id, key):
-    """Convert old user data to new panel structure and add key."""
     if isinstance(user_data, str):
-        # Old user_data was just a string key
         old_key = user_data
         new_data = {"panels": {panel_id: {"keys": [old_key]}}}
         if key and key != old_key:
             new_data["panels"][panel_id]["keys"].append(key)
         return new_data
     elif isinstance(user_data, dict) and "key" in user_data:
-        # Old format: {"key": "..."}
         old_key = user_data["key"]
         new_data = {"panels": {panel_id: {"keys": [old_key]}}}
         if key and key != old_key:
             new_data["panels"][panel_id]["keys"].append(key)
         return new_data
     else:
-        # Empty or unknown: create new
         return {"panels": {panel_id: {"keys": [key]}} if key else {panel_id: {"keys": []}}}
 
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
@@ -309,22 +268,16 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if datetime.now(timezone.utc) > expires:
                 return await interaction.response.send_message("❌ This key has expired.", ephemeral=True)
 
-            # Get user data, handle old formats
             user_data = users.get(uid)
-            # If user_data is old format, we'll convert it during migration
             if user_data is None:
                 user_data = {"panels": {}}
             elif not isinstance(user_data, dict):
-                # It's a string (old format) – migrate
                 user_data = migrate_user_data(user_data, panel_id, key)
             elif "panels" not in user_data:
-                # Old dict format (could have "key")
                 user_data = migrate_user_data(user_data, panel_id, key)
             else:
-                # New format – ensure panel entry exists
                 if panel_id not in user_data["panels"]:
                     user_data["panels"][panel_id] = {"keys": []}
-                # Check if key already redeemed
                 if key in user_data["panels"][panel_id]["keys"]:
                     return await interaction.response.send_message("✅ You already redeemed this key for this panel.", ephemeral=True)
                 user_data["panels"][panel_id]["keys"].append(key)
@@ -459,14 +412,11 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            # Get user data, may be old format
             user_data = users.get(uid)
-            # Use helper to get keys
             panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel. Redeem one using the button above.", ephemeral=True)
 
-            # Filter active keys
             active_keys = [k for k in panel_keys if k in keys and keys[k]["active"] and keys[k].get("guild_id") == guild_id and keys[k].get("panel_id") == panel_id]
             if not active_keys:
                 return await interaction.response.send_message("❌ All your keys for this panel are invalid or expired. Please redeem a new key.", ephemeral=True)
