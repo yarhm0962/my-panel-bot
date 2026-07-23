@@ -101,13 +101,11 @@ def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
 # ============================================================
-# NEW OBFUSCATION – TABLE‑BASED (as requested)
+# OBFUSCATION – TABLE-BASED WITH HWID CHECK
 # ============================================================
 def obfuscate_script(lua_code, panel_id):
-    # 1. Base64 encode the original script
     encoded = base64.b64encode(lua_code.encode()).decode()
     
-    # 2. Split into random chunks (3–8 chars)
     chunks = []
     i = 0
     while i < len(encoded):
@@ -115,10 +113,8 @@ def obfuscate_script(lua_code, panel_id):
         chunks.append(encoded[i:i+size])
         i += size
     
-    # 3. Build the Lua table string
     table_str = "{" + ",".join(f'"{chunk}"' for chunk in chunks) + "}"
     
-    # 4. The wrapper with placeholders
     wrapper = f'''
 return(function(...)
     local L = {table_str}
@@ -152,7 +148,10 @@ return(function(...)
     local b64 = table.concat(L)
     local decoded = b64decode(b64)
 
-    local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key .. "&panel={panel_id}"
+    -- HWID = Roblox UserId (unique per account)
+    local hwid = game.Players.LocalPlayer.UserId
+
+    local url = "https://{WEBSITE_DOMAIN}/validate?key=" .. key .. "&panel={panel_id}&hwid=" .. hwid
     local success, response = pcall(function()
         return game:GetService("HttpService"):JSONDecode(game:HttpGet(url))
     end)
@@ -163,8 +162,8 @@ return(function(...)
     end
 
     if not response or not response.valid then
-        local msg = response and response.reason or "Invalid key"
-        game:GetService("Players").LocalPlayer:Kick('Invalid key')
+        local msg = response and response.reason or "Invalid key or HWID mismatch"
+        game:GetService("Players").LocalPlayer:Kick('Access denied: ' .. msg)
         return nil
     end
 
@@ -184,7 +183,7 @@ end)()
     return wrapper
 
 # ============================================================
-# Everything below is unchanged from the last stable version
+# REST OF THE BOT – UNCHANGED EXCEPT NEW COMMANDS/BUTTONS
 # ============================================================
 
 def ensure_panel_guild(panel_data, guild_id):
@@ -295,6 +294,7 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             embed.add_field(name="Your Key", value=f"`{key}`", inline=False)
             embed.add_field(name="Panel", value=panel.get("title", "Unknown"), inline=False)
             embed.add_field(name="Status", value="Active ✅", inline=True)
+            embed.add_field(name="HWID", value="Not set (will be set on first execution)", inline=True)
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             print(f"RedeemModal error: {e}")
@@ -314,7 +314,9 @@ class StatsView(discord.ui.View):
             expiry = datetime.fromisoformat(data["expires"])
             is_active = data["active"] and datetime.now(timezone.utc) <= expiry
             status = "🟢 Active" if is_active else "🔴 Expired"
-            options.append(discord.SelectOption(label=label, value=k, description=f"{status} - expires {expiry.strftime('%Y-%m-%d')}"))
+            hwid = data.get("hwid", "Not set")
+            hwid_display = hwid if hwid != "Not set" else "Not set"
+            options.append(discord.SelectOption(label=label, value=k, description=f"{status} - HWID: {hwid_display[:12]}..."))
 
         self.select = discord.ui.Select(placeholder="Choose a key to view stats", options=options, custom_id="stats_select")
         self.select.callback = self.select_callback
@@ -361,6 +363,7 @@ class StatsView(discord.ui.View):
             except:
                 pass
 
+        hwid = data.get("hwid", "Not set")
         embed = discord.Embed(
             title=f"🗝️ {self.user.display_name}'s Key",
             color=discord.Color.dark_purple()
@@ -369,6 +372,7 @@ class StatsView(discord.ui.View):
         embed.add_field(name="Key", value=f"`{key}`", inline=False)
         embed.add_field(name="Status", value=status_str, inline=True)
         embed.add_field(name="Type", value="Multi‑use", inline=True)
+        embed.add_field(name="HWID", value=f"`{hwid}`", inline=True)
         embed.add_field(name="Created", value=created, inline=True)
         embed.add_field(name="Expires", value=expires.strftime("%Y-%m-%d %H:%M UTC") if is_active else "Expired", inline=True)
         embed.add_field(name="Time Left", value=time_left_str, inline=True)
@@ -437,7 +441,7 @@ class PanelView(discord.ui.View):
             if script_id in scripts:
                 script_url = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
             else:
-                script_url = f"https://api.pastes.dev/{script_id}"  # fallback (if any old script was uploaded there)
+                script_url = f"https://api.pastes.dev/{script_id}"  # fallback
 
             loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
 
@@ -519,10 +523,53 @@ class PanelView(discord.ui.View):
     async def reset_hwid_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             users = load_json(USERS_FILE)
+            keys = load_json(KEYS_FILE)
             uid = str(interaction.user.id)
-            if uid not in users or not users[uid].get("keys"):
-                return await interaction.response.send_message("❌ You must redeem a key first.", ephemeral=True)
-            await interaction.response.send_message("⚙️ HWID reset feature is coming soon. For now, contact support.", ephemeral=True)
+            guild_id = str(interaction.guild.id)
+
+            panels = load_json(PANEL_FILE)
+            panel = None
+            panel_id = None
+            if self.message_id:
+                for pid, pdata in panels.items():
+                    if pdata.get("message_id") == self.message_id:
+                        panel = pdata
+                        panel_id = pid
+                        break
+            if not panel:
+                panel = panels.get(self.channel_id)
+                panel_id = self.channel_id
+
+            if not panel:
+                return await interaction.response.send_message("⚠️ Panel not found.", ephemeral=True)
+
+            if ensure_panel_guild(panel, guild_id):
+                panels[panel_id] = panel
+                save_json(PANEL_FILE, panels)
+
+            user_data = users.get(uid)
+            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
+            if not panel_keys:
+                return await interaction.response.send_message("❌ You have no redeemed keys for this panel.", ephemeral=True)
+
+            # Filter active keys
+            active_keys = [k for k in panel_keys if k in keys and keys[k]["active"] and keys[k].get("guild_id") == guild_id and keys[k].get("panel_id") == panel_id]
+            if not active_keys:
+                return await interaction.response.send_message("❌ No active keys found to reset HWID.", ephemeral=True)
+
+            # Reset HWID for all active keys
+            reset_count = 0
+            for k in active_keys:
+                if "hwid" in keys[k]:
+                    del keys[k]["hwid"]
+                    reset_count += 1
+            save_json(KEYS_FILE, keys)
+
+            embed = discord.Embed(title="✅ HWID Reset Successful!", color=discord.Color.green())
+            embed.add_field(name="Panel", value=panel.get("title", "Unknown"), inline=False)
+            embed.add_field(name="Keys Reset", value=str(reset_count), inline=True)
+            embed.add_field(name="Note", value="Next time you run the script, your new HWID will be stored.", inline=False)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             print(f"reset_hwid_btn error: {e}")
             traceback.print_exc()
@@ -671,7 +718,8 @@ async def genkey(interaction: discord.Interaction, panel: str, days: int):
             "owner_name": interaction.user.name,
             "created_at": now.isoformat(),
             "guild_id": guild_id,
-            "panel_id": panel_id
+            "panel_id": panel_id,
+            # hwid is not set initially
         }
         save_json(KEYS_FILE, keys)
         await interaction.response.send_message(f"✅ Key Generated for panel **{panel_data.get('title', 'Unknown')}** :\n`{user_key}`\nValid: {days} days", ephemeral=True)
@@ -714,7 +762,8 @@ async def view_all_keys(interaction: discord.Interaction):
             owner = v.get("owner_name", v.get("owner", "Unknown"))
             panel_id = v.get("panel_id", "Unknown")
             panel_title = panels.get(panel_id, {}).get("title", "Unknown Panel")
-            line = f"`{k}` — {status} — expires: {v['expires']} — owner: {owner} — panel: {panel_title}"
+            hwid = v.get("hwid", "Not set")
+            line = f"`{k}` — {status} — expires: {v['expires']} — owner: {owner} — panel: {panel_title} — HWID: {hwid[:12] if hwid != 'Not set' else 'Not set'}..."
 
             if len(current_embed.fields) >= 25:
                 embeds.append(current_embed)
@@ -775,6 +824,31 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
+@client.tree.command(name="reset_hwid", description="Reset HWID for a specific key (Admin only)")
+@app_commands.describe(key="The key to reset HWID for")
+async def reset_hwid(interaction: discord.Interaction, key: str):
+    try:
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("No permission.", ephemeral=True)
+
+        keys = load_json(KEYS_FILE)
+        if key not in keys:
+            return await interaction.response.send_message(f"❌ Key `{key}` not found.", ephemeral=True)
+
+        if "hwid" in keys[key]:
+            del keys[key]["hwid"]
+            save_json(KEYS_FILE, keys)
+            embed = discord.Embed(title="✅ HWID Reset Successful!", color=discord.Color.green())
+            embed.add_field(name="Key", value=f"`{key}`", inline=False)
+            embed.add_field(name="Status", value="HWID cleared. Next execution will store new HWID.", inline=False)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(f"ℹ️ Key `{key}` does not have a HWID stored.", ephemeral=True)
+    except Exception as e:
+        print(f"reset_hwid command error: {e}")
+        traceback.print_exc()
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
 @client.tree.command(name="add_script", description="Add a Lua script file to a specific panel (Admin only)")
 @app_commands.describe(message_id="Message ID of the panel embed (REQUIRED – right-click the panel message and Copy ID)", file="Upload .lua or .txt file")
 @app_commands.rename(message_id="message-id")
@@ -808,7 +882,7 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         content = await file.read()
         lua_code = content.decode("utf-8")
 
-        # Use the new obfuscation
+        # Use the new obfuscation (with HWID)
         obfuscated_code = obfuscate_script(lua_code, panel_key)
 
         script_id = panel.get("script_id")
@@ -829,7 +903,7 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         embed.add_field(name="Panel", value=f"Message ID: {message_id}", inline=False)
         embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
-        embed.add_field(name="Storage", value="MongoDB", inline=False)
+        embed.add_field(name="Protection", value="Key + HWID validation", inline=False)
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
@@ -870,9 +944,44 @@ def check_key():
         print(f"check_key error: {e}")
         return {"valid": False, "reason": "Server error"}
 
+@app.route("/validate")
+def validate_hwid():
+    try:
+        key = request.args.get("key")
+        panel_id = request.args.get("panel")
+        hwid = request.args.get("hwid")
+        if not key or not panel_id or not hwid:
+            return {"valid": False, "reason": "Missing parameters"}
+
+        keys = load_json(KEYS_FILE)
+        if key not in keys or not keys[key]["active"]:
+            return {"valid": False, "reason": "Invalid key"}
+
+        if keys[key].get("panel_id") != panel_id:
+            return {"valid": False, "reason": "Key not valid for this panel"}
+
+        expires = datetime.fromisoformat(keys[key]["expires"])
+        if datetime.now(timezone.utc) > expires:
+            return {"valid": False, "reason": "Key expired"}
+
+        # HWID check
+        stored_hwid = keys[key].get("hwid")
+        if stored_hwid is None:
+            # First time – store HWID
+            keys[key]["hwid"] = hwid
+            save_json(KEYS_FILE, keys)
+            return {"valid": True, "reason": "HWID stored successfully"}
+        elif stored_hwid == hwid:
+            return {"valid": True, "reason": "HWID matches"}
+        else:
+            return {"valid": False, "reason": "HWID mismatch – this key is locked to another device"}
+    except Exception as e:
+        print(f"validate_hwid error: {e}")
+        return {"valid": False, "reason": "Server error"}
+
 @app.route("/")
 def home():
-    return "M1rage Lua Service Online | Protected by server‑side key validation"
+    return "M1rage Lua Service Online | Protected by key + HWID validation"
 
 def run_flask():
     try:
