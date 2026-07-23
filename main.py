@@ -93,8 +93,8 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
+# ================== FIXED OBFUSCATION ==================
 def obfuscate_script(lua_code):
-    """Encodes script in Base64 and wraps it with a tested, working decoder."""
     encoded = base64.b64encode(lua_code.encode()).decode()
 
     wrapper = f'''
@@ -108,18 +108,19 @@ if not env.SCRIPT_KEY or env.SCRIPT_KEY == "" then
 end
 local key = env.SCRIPT_KEY
 
--- ========== PROVEN BASE64 DECODER ==========
+-- ========== RELIABLE BASE64 DECODER ==========
 local function b64decode(data)
-    local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = string.gsub(data, '[^'..b..'=]', '')
     local result = {{}}
     for i = 1, #data, 4 do
         local chunk = data:sub(i, i+3)
         local a, c, d, e = chunk:byte(1, 4)
-        local x = (b:find(string.char(a)) or 2) - 1
-        local y = (b:find(string.char(c)) or 2) - 1
-        local z = (b:find(string.char(d)) or 2) - 1
-        local w = (b:find(string.char(e)) or 2) - 1
+        -- Find index in base64 table, default to 0 for '='
+        local x = (a and a ~= 61) and (b:find(string.char(a), 1, true) - 1) or 0
+        local y = (c and c ~= 61) and (b:find(string.char(c), 1, true) - 1) or 0
+        local z = (d and d ~= 61) and (b:find(string.char(d), 1, true) - 1) or 0
+        local w = (e and e ~= 61) and (b:find(string.char(e), 1, true) - 1) or 0
         local n1 = (x * 4) + math.floor(y / 16)
         local n2 = ((y % 16) * 16) + math.floor(z / 4)
         local n3 = ((z % 4) * 64) + w
@@ -129,15 +130,20 @@ local function b64decode(data)
     end
     return table.concat(result)
 end
--- ==========================================
+-- ==================================================
 
 local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key
 local success, response = pcall(function()
     return game:GetService("HttpService"):JSONDecode(game:HttpGet(url))
 end)
 
-if not success or not response.valid then
-    local msg = response and response.reason or "Key validation failed"
+if not success or not response or not response.valid then
+    local msg = "Key validation failed"
+    if response and response.reason then
+        msg = response.reason
+    elseif not response then
+        msg = "Could not reach validation server"
+    end
     game:GetService("Players").LocalPlayer:Kick('Invalid or expired key: ' .. msg)
     return
 end
@@ -152,6 +158,7 @@ fn()
 '''
     return wrapper
 
+# ================== REST OF THE BOT ==================
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
         label="Key to Redeem",
