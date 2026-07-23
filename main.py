@@ -41,7 +41,6 @@ def load_json(filename):
     docs = list(col.find({}))
     result = {}
     for doc in docs:
-        # For panel, we use _id as key (channel ID)
         if filename == "panel":
             result[doc['_id']] = doc
         else:
@@ -62,9 +61,7 @@ def save_json(filename, data):
         return
     col.delete_many({})
     if filename == "panel":
-        # data is a dict of channel_id -> panel_data
         for key, value in data.items():
-            # ensure _id is set to channel_id
             value['_id'] = key
             col.insert_one(value)
     else:
@@ -108,15 +105,14 @@ def obfuscate_script(lua_code):
     encoded = base64.b64encode(lua_code.encode()).decode()
 
     wrapper = f'''
--- ========== KEY CHECK (USES _G DIRECTLY) ==========
+-- ========== KEY CHECK ==========
 local key = _G.SCRIPT_KEY
 if not key or key == "" then
     game:GetService("Players").LocalPlayer:Kick('Pls Put Your _G.SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
     return
 end
--- ================================================
 
--- ========== RELIABLE BASE64 DECODER ==========
+-- ========== BASE64 DECODER ==========
 local function b64decode(data)
     local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = string.gsub(data, '[^'..b..'=]', '')
@@ -137,24 +133,28 @@ local function b64decode(data)
     end
     return table.concat(result)
 end
--- ================================================
 
+-- ========== SERVER VALIDATION ==========
 local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key
 local success, response = pcall(function()
     return game:GetService("HttpService"):JSONDecode(game:HttpGet(url))
 end)
 
-if not success or not response or not response.valid then
-    local msg = "Key validation failed"
-    if response and response.reason then
-        msg = response.reason
-    elseif not response then
-        msg = "Could not reach validation server"
-    end
+if not success then
+    game:GetService("Players").LocalPlayer:Kick('Could not reach validation server')
+    return
+end
+
+-- Print server response to console for debugging
+print("Key validation response:", response)
+
+if not response or not response.valid then
+    local msg = response and response.reason or "Invalid or expired key"
     game:GetService("Players").LocalPlayer:Kick('Invalid or expired key: ' .. msg)
     return
 end
 
+-- ========== DECODE AND EXECUTE ==========
 local decoded = b64decode("{encoded}")
 local fn = loadstring(decoded)
 if not fn then
@@ -226,7 +226,6 @@ class PanelView(discord.ui.View):
             if uid not in users:
                 return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
 
-            # Get panel data from the channel where the button was clicked
             panels = load_json(PANEL_FILE)
             channel_id = str(interaction.channel_id)
             panel = panels.get(channel_id)
@@ -328,11 +327,10 @@ async def create_panel(interaction: discord.Interaction, script_title: str, desc
             "channel_id": channel_id,
             "created_at": datetime.utcnow().isoformat(),
             "creator": interaction.user.display_name,
-            "script_id": None  # no script yet
+            "script_id": None
         }
         save_json(PANEL_FILE, panels)
 
-        # Send the panel with the view (pass channel_id)
         await interaction.response.send_message(embed=embed, view=PanelView(channel_id))
     except Exception as e:
         print(f"create_panel error: {e}")
@@ -472,7 +470,6 @@ async def add_script(interaction: discord.Interaction, choose_panel: str, file: 
         scripts[script_id] = obfuscated_code
         save_json(SCRIPTS_FILE, scripts)
 
-        # Update the panel with the new script_id
         panel["script_id"] = script_id
         panels[choose_panel] = panel
         save_json(PANEL_FILE, panels)
@@ -512,6 +509,8 @@ def check_key():
             return {"valid": False, "reason": "No key provided"}
 
         keys = load_json(KEYS_FILE)
+        print(f"Checking key: {key} | keys in DB: {list(keys.keys())}")  # DEBUG
+
         if key not in keys or not keys[key]["active"]:
             return {"valid": False, "reason": "Invalid key"}
 
