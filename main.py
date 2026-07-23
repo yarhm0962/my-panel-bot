@@ -4,7 +4,6 @@ import json
 import random
 import os
 import base64
-import requests
 import re
 from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, request
@@ -13,6 +12,9 @@ import sys
 import traceback
 import pymongo
 import time
+import urllib.request
+import urllib.error
+import urllib.parse
 
 TOKEN = os.getenv("TOKEN")
 WEBSITE_DOMAIN = os.getenv("WEBSITE_DOMAIN", "my-panel-bot.onrender.com")
@@ -103,12 +105,9 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
-# ========== NEW OBFUSCATION – TABLE-BASED ==========
+# ========== OBFUSCATION – TABLE-BASED ==========
 def obfuscate_script(lua_code, panel_id):
-    # 1. Encode original code in Base64
     encoded = base64.b64encode(lua_code.encode()).decode()
-    
-    # 2. Split into random-length chunks (3–8 chars)
     import random
     chunks = []
     i = 0
@@ -116,11 +115,7 @@ def obfuscate_script(lua_code, panel_id):
         size = random.randint(3, 8)
         chunks.append(encoded[i:i+size])
         i += size
-    
-    # Format table string
     table_str = "{" + ",".join(f'"{chunk}"' for chunk in chunks) + "}"
-    
-    # 3. Build the wrapper with placeholders for WEBSITE_DOMAIN and panel_id
     wrapper = f'''
 return(function(...)
     local L = {table_str}
@@ -181,49 +176,58 @@ return(function(...)
     if getgenv then getgenv().SCRIPT_KEY = nil end
 end)()
 '''
-    # Replace placeholders
     wrapper = wrapper.replace("{WEBSITE_DOMAIN}", WEBSITE_DOMAIN)
     wrapper = wrapper.replace("{panel_id}", panel_id)
     return wrapper
 
+# ========== UPLOAD USING URLLIB (no requests) ==========
 def upload_to_paste_service(lua_code):
-    """Try pastes.dev first, then rentry.co, else None."""
-    # Try pastes.dev
+    """Try pastes.dev then rentry.co using urllib."""
+    # pastes.dev
     for attempt in range(2):
         try:
-            response = requests.post(
+            req = urllib.request.Request(
                 "https://api.pastes.dev/post",
-                data=lua_code,
+                data=lua_code.encode('utf-8'),
                 headers={"User-Agent": "M1rage-Bot", "Content-Type": "text/plain"},
-                timeout=10
+                method="POST"
             )
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    pid = data.get("key")
-                    if pid:
-                        return ("pastes.dev", pid)
-                except:
-                    pass
-                txt = response.text.strip()
-                if txt and not txt.startswith('<!DOCTYPE'):
-                    return ("pastes.dev", txt)
-        except:
-            pass
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = resp.read().decode()
+                if resp.status == 200:
+                    try:
+                        import json
+                        j = json.loads(data)
+                        pid = j.get("key")
+                        if pid:
+                            return ("pastes.dev", pid)
+                    except:
+                        pass
+                    txt = data.strip()
+                    if txt and not txt.startswith('<!DOCTYPE'):
+                        return ("pastes.dev", txt)
+        except Exception as e:
+            print(f"pastes.dev attempt {attempt+1} failed: {e}")
         time.sleep(1)
 
-    # Try rentry.co
+    # rentry.co
     try:
-        payload = {"content": lua_code}
-        headers = {"Content-Type": "application/json"}
-        response = requests.post("https://rentry.co/api/new", json=payload, headers=headers, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            pid = data.get("url", "").replace("https://rentry.co/", "")
-            if pid:
-                return ("rentry.co", pid)
-    except:
-        pass
+        payload = json.dumps({"content": lua_code}).encode('utf-8')
+        req = urllib.request.Request(
+            "https://rentry.co/api/new",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read().decode()
+            if resp.status == 200:
+                j = json.loads(data)
+                pid = j.get("url", "").replace("https://rentry.co/", "")
+                if pid:
+                    return ("rentry.co", pid)
+    except Exception as e:
+        print(f"rentry.co failed: {e}")
 
     return None, None
 
@@ -848,7 +852,6 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         content = await file.read()
         lua_code = content.decode("utf-8")
 
-        # ========== USE NEW OBFUSCATION ==========
         obfuscated_code = obfuscate_script(lua_code, panel_key)
 
         # Try paste services
