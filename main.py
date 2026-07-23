@@ -302,6 +302,14 @@ class PanelView(discord.ui.View):
             if not role:
                 return await interaction.response.send_message("⚠️ The configured role no longer exists. Contact an admin.", ephemeral=True)
 
+            # Check bot permissions
+            bot_member = interaction.guild.me
+            if not bot_member.guild_permissions.manage_roles:
+                return await interaction.response.send_message("❌ I don't have permission to manage roles. Please give me the 'Manage Roles' permission.", ephemeral=True)
+
+            if role >= bot_member.top_role:
+                return await interaction.response.send_message("❌ I cannot assign this role because it is above or equal to my highest role. Please move my role higher.", ephemeral=True)
+
             # Check if user already has the role
             if role in interaction.user.roles:
                 return await interaction.response.send_message("✅ You already have this role.", ephemeral=True)
@@ -310,6 +318,8 @@ class PanelView(discord.ui.View):
             embed = discord.Embed(title="✅ Role Assigned!", color=discord.Color.green())
             embed.add_field(name="Role", value=role.mention, inline=False)
             await interaction.response.send_message(embed=embed, ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don't have permission to assign roles. Please give me the 'Manage Roles' permission and ensure my role is higher than the target role.", ephemeral=True)
         except Exception as e:
             print(f"role_btn error: {e}")
             traceback.print_exc()
