@@ -172,8 +172,8 @@ class PanelView(discord.ui.View):
             traceback.print_exc()
             await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-    @discord.ui.button(label="Get Loadstring", emoji="📜", style=discord.ButtonStyle.blurple, custom_id="loadstring_btn")
-    async def loadstring_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Get Script", emoji="📜", style=discord.ButtonStyle.blurple, custom_id="loadstring_btn")
+    async def get_script_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             users = load_json(USERS_FILE)
             panel = load_json(PANEL_FILE)
@@ -189,16 +189,16 @@ class PanelView(discord.ui.View):
 
             loadstring_code = f'getgenv().SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
 
-            embed = discord.Embed(title="📜 Your Loadstring", color=discord.Color.green())
+            embed = discord.Embed(title="📜 Your Script", color=discord.Color.green())
             embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
             embed.set_footer(text="SCRIPT_KEY is REQUIRED — script will NOT work without it!")
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
-            print(f"loadstring_btn error: {e}")
+            print(f"get_script_btn error: {e}")
             traceback.print_exc()
             await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-    @discord.ui.button(label="Get Role", emoji="🎖️", style=discord.ButtonStyle.grey, custom_id="role_btn")
+    @discord.ui.button(label="Get Role", emoji="👤", style=discord.ButtonStyle.blurple, custom_id="role_btn")
     async def role_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             users = load_json(USERS_FILE)
@@ -216,6 +216,45 @@ class PanelView(discord.ui.View):
             traceback.print_exc()
             await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
+    @discord.ui.button(label="Reset HWID", emoji="⚙️", style=discord.ButtonStyle.grey, custom_id="reset_hwid_btn")
+    async def reset_hwid_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            users = load_json(USERS_FILE)
+            uid = str(interaction.user.id)
+            if uid not in users:
+                return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
+            # Placeholder: In a real HWID system, you'd clear the HWID for this user.
+            # For now, we just acknowledge.
+            await interaction.response.send_message("⚙️ HWID reset feature is coming soon. For now, contact support.", ephemeral=True)
+        except Exception as e:
+            print(f"reset_hwid_btn error: {e}")
+            traceback.print_exc()
+            await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+    @discord.ui.button(label="Get Stats", emoji="📊", style=discord.ButtonStyle.grey, custom_id="stats_btn")
+    async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            users = load_json(USERS_FILE)
+            uid = str(interaction.user.id)
+            if uid not in users:
+                return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
+            user_data = users[uid]
+            key = user_data["key"]
+            redeemed = user_data.get("redeemed", "Unknown")
+            keys = load_json(KEYS_FILE)
+            key_info = keys.get(key, {})
+            expires = key_info.get("expires", "Unknown")
+            embed = discord.Embed(title="📊 Your Stats", color=discord.Color.dark_purple())
+            embed.add_field(name="Key", value=f"`{key}`", inline=False)
+            embed.add_field(name="Redeemed On", value=redeemed, inline=True)
+            embed.add_field(name="Expires", value=expires, inline=True)
+            embed.set_footer(text="M1rage Control Panel")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception as e:
+            print(f"stats_btn error: {e}")
+            traceback.print_exc()
+            await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
 @client.event
 async def on_ready():
     print(f"Bot Online: {client.user}")
@@ -228,16 +267,18 @@ async def create_panel(interaction: discord.Interaction, script_title: str, desc
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("No permission.", ephemeral=True)
 
+        # Default description without extra spaces
         if not description:
-            description = f"This control panel is for the project: **{script_title}**\n\nIf you're a buyer, click on the buttons below to redeem your key, get the script or get your role."
+            description = "This control panel is for the project: **{}**\n\nClick the buttons below to redeem your key, get the script, or get your role.".format(script_title)
 
-        embed = discord.Embed(title=script_title, description=description, color=discord.Color.blue())
+        embed = discord.Embed(title=script_title, description=description, color=discord.Color.dark_purple())
         embed.set_footer(text="M1rage Control Panel")
 
         panel = load_json(PANEL_FILE)
         panel["title"] = script_title
         panel["description"] = description
         panel["channel_id"] = str(interaction.channel_id)
+        panel["created_at"] = datetime.utcnow().isoformat()
         save_json(PANEL_FILE, panel)
 
         await interaction.response.send_message(embed=embed, view=PanelView())
