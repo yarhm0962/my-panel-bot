@@ -4,6 +4,7 @@ import json
 import random
 import os
 import base64
+import requests
 from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, request
 import threading
@@ -25,7 +26,7 @@ db = mongo_client.get_database("bot_data")
 keys_col = db["keys"]
 users_col = db["users"]
 panel_col = db["panel"]
-scripts_col = db["scripts"]
+# scripts_col is no longer needed – scripts are stored on pastes.dev
 
 def load_json(filename):
     if filename == "keys":
@@ -34,8 +35,6 @@ def load_json(filename):
         col = users_col
     elif filename == "panel":
         col = panel_col
-    elif filename == "scripts":
-        col = scripts_col
     else:
         return {}
     docs = list(col.find({}))
@@ -66,8 +65,6 @@ def save_json(filename, data):
         col = users_col
     elif filename == "panel":
         col = panel_col
-    elif filename == "scripts":
-        col = scripts_col
     else:
         return
     col.delete_many({})
@@ -82,7 +79,6 @@ def save_json(filename, data):
 KEYS_FILE = "keys"
 USERS_FILE = "users"
 PANEL_FILE = "panel"
-SCRIPTS_FILE = "scripts"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -108,9 +104,6 @@ def generate_user_key():
         part = ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(4))
         parts.append(part)
     return "-".join(parts)
-
-def generate_script_id():
-    return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
 def obfuscate_script(lua_code, panel_id):
     encoded = base64.b64encode(lua_code.encode()).decode()
@@ -174,6 +167,24 @@ end
     wrapper = wrapper.replace("{encoded}", encoded)
     wrapper = wrapper.replace("{panel_id}", panel_id)
     return wrapper
+
+def upload_to_pastes(lua_code):
+    """Upload obfuscated script to pastes.dev and return the paste ID."""
+    try:
+        headers = {
+            "User-Agent": "M1rage-Bot/1.0",
+            "Content-Type": "text/lua"
+        }
+        response = requests.post("https://api.pastes.dev/post", data=lua_code, headers=headers, timeout=30)
+        if response.status_code == 200:
+            paste_id = response.text.strip()
+            if paste_id:
+                return paste_id
+        print(f"pastes.dev upload failed: {response.status_code} - {response.text}")
+        return None
+    except Exception as e:
+        print(f"pastes.dev upload error: {e}")
+        return None
 
 def ensure_panel_guild(panel_data, guild_id):
     if panel_data and not panel_data.get("guild_id"):
@@ -397,7 +408,8 @@ class PanelView(discord.ui.View):
             if not panel or "script_id" not in panel or not panel["script_id"]:
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
-            script_url = f"https://{WEBSITE_DOMAIN}/{panel['script_id']}"
+            # ========== NEW: Loadstring uses pastes.dev ==========
+            script_url = f"https://api.pastes.dev/{panel['script_id']}"
 
             loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
 
@@ -660,10 +672,8 @@ async def view_all_keys(interaction: discord.Interaction):
         keys = load_json(KEYS_FILE)
         panels = load_json(PANEL_FILE)
 
-        # Build a set of panel IDs that exist in this guild (active panels)
         active_panel_ids = {pid for pid, pdata in panels.items() if pdata.get("guild_id") == guild_id}
 
-        # Filter keys: must belong to this guild and have a panel_id that exists in active panels
         guild_keys = {}
         for k, v in keys.items():
             if v.get("guild_id") == guild_id and v.get("panel_id") in active_panel_ids:
@@ -685,7 +695,6 @@ async def view_all_keys(interaction: discord.Interaction):
                 status = "🔴 Expired"
             owner = v.get("owner_name", v.get("owner", "Unknown"))
             panel_id = v.get("panel_id", "Unknown")
-            # Try to get panel title for more info
             panel_title = panels.get(panel_id, {}).get("title", "Unknown Panel")
             line = f"`{k}` — {status} — expires: {v['expires']} — owner: {owner} — panel: {panel_title}"
 
@@ -783,25 +792,23 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
 
         obfuscated_code = obfuscate_script(lua_code, panel_key)
 
-        script_id = panel.get("script_id")
-        if not script_id:
-            script_id = generate_script_id()
-            panel["script_id"] = script_id
+        # ========== UPLOAD TO PASTES.DEV ==========
+        paste_id = upload_to_pastes(obfuscated_code)
+        if not paste_id:
+            return await interaction.followup.send("❌ Failed to upload script to pastes.dev. Please try again later.", ephemeral=True)
 
-        scripts = load_json(SCRIPTS_FILE)
-        scripts[script_id] = obfuscated_code
-        save_json(SCRIPTS_FILE, scripts)
-
+        # Update panel with the paste ID
+        panel["script_id"] = paste_id
         panels[panel_key] = panel
         save_json(PANEL_FILE, panels)
 
-        direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
+        direct_link = f"https://api.pastes.dev/{paste_id}"
 
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
         embed.add_field(name="Panel", value=f"Message ID: {message_id}", inline=False)
-        embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
+        embed.add_field(name="Script ID", value=f"`{paste_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
-        embed.add_field(name="Protection", value="Server‑validated key + Base64 encoding", inline=False)
+        embed.add_field(name="Storage", value="pastes.dev ✅", inline=False)
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
@@ -809,18 +816,8 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         traceback.print_exc()
         await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
 
+# ========== FLASK SERVER (still needed for /checkkey) ==========
 app = Flask(__name__)
-
-@app.route("/<script_id>")
-def get_script(script_id):
-    try:
-        scripts = load_json(SCRIPTS_FILE)
-        if script_id in scripts:
-            return Response(scripts[script_id], mimetype="text/plain")
-        return "Script Not Found", 404
-    except Exception as e:
-        print(f"get_script error: {e}")
-        return "Internal Server Error", 500
 
 @app.route("/checkkey")
 def check_key():
