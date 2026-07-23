@@ -476,7 +476,7 @@ class PanelView(discord.ui.View):
                 script_id = panel["script_id"]
                 scripts = load_json(SCRIPTS_FILE)
                 if script_id in scripts:
-                    script_url = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
+                    script_url = f"https://{WEBSITE_DOMAIN}/{script_id}"
                 else:
                     script_url = f"https://api.pastes.dev/{script_id}"
 
@@ -505,7 +505,7 @@ class PanelView(discord.ui.View):
             script_id = panel["script_id"]
             scripts = load_json(SCRIPTS_FILE)
             if script_id in scripts:
-                script_url = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
+                script_url = f"https://{WEBSITE_DOMAIN}/{script_id}"
             else:
                 script_url = f"https://api.pastes.dev/{script_id}"
 
@@ -1209,14 +1209,22 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         panels[panel_key] = panel
         save_json(PANEL_FILE, panels)
 
-        direct_link = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
+        direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
+
+        # Create a downloadable file with the obfuscated code
+        obfuscated_file = discord.File(
+            io.BytesIO(obfuscated_code.encode('utf-8')),
+            filename=f"obfuscated_{script_id}.lua"
+        )
 
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
         embed.add_field(name="Panel", value=f"Message ID: {message_id}", inline=False)
         embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
         embed.add_field(name="Protection", value="Key + HWID validation", inline=False)
-        await interaction.followup.send(embed=embed)
+        embed.add_field(name="Download", value="Check the attached file for the obfuscated Lua code.", inline=False)
+
+        await interaction.followup.send(embed=embed, file=obfuscated_file)
 
     except Exception as e:
         print(f"add_script error: {e}")
@@ -1225,12 +1233,166 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
 
 app = Flask(__name__)
 
+# ======== ORIGINAL /raw ROUTE (falls back to raw) ========
 @app.route("/raw/<script_id>")
 def get_raw_script(script_id):
     scripts = load_json(SCRIPTS_FILE)
     if script_id in scripts:
         return Response(scripts[script_id], mimetype="text/plain")
     return "Script Not Found", 404
+
+# ======== NEW SMART ROUTE ========
+@app.route("/<script_id>")
+def serve_script(script_id):
+    user_agent = request.headers.get("User-Agent", "").lower()
+    # Detect Roblox: typical UA contains "roblox", "luaclient", "httpclient" etc.
+    if any(x in user_agent for x in ["roblox", "luaclient", "httpclient", "http service", "game:httpget"]):
+        scripts = load_json(SCRIPTS_FILE)
+        if script_id in scripts:
+            return Response(scripts[script_id], mimetype="text/plain")
+        return "Script Not Found", 404
+    else:
+        # Protection page
+        return '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>🔒 Protected Script</title>
+            <style>
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }
+                body {
+                    background: #0a0a0f;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    min-height: 100vh;
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    margin: 0;
+                    padding: 20px;
+                    color: #eee;
+                    background: radial-gradient(circle at 30% 30%, #12121a, #08080c);
+                }
+                .container {
+                    max-width: 700px;
+                    text-align: center;
+                    background: rgba(20, 20, 30, 0.7);
+                    backdrop-filter: blur(12px);
+                    -webkit-backdrop-filter: blur(12px);
+                    padding: 50px 40px;
+                    border-radius: 30px;
+                    border: 1px solid rgba(100, 100, 255, 0.15);
+                    box-shadow: 0 25px 60px rgba(0,0,0,0.8), 0 0 40px rgba(100, 100, 255, 0.05);
+                    transition: all 0.3s ease;
+                }
+                .icon {
+                    font-size: 80px;
+                    margin-bottom: 20px;
+                    filter: drop-shadow(0 0 30px rgba(255, 50, 50, 0.3));
+                    animation: pulse 2s infinite;
+                }
+                @keyframes pulse {
+                    0% { transform: scale(1); }
+                    50% { transform: scale(1.05); }
+                    100% { transform: scale(1); }
+                }
+                h1 {
+                    font-size: 42px;
+                    font-weight: 800;
+                    background: linear-gradient(135deg, #ff6b6b, #ff3366, #cc44ff);
+                    -webkit-background-clip: text;
+                    -webkit-text-fill-color: transparent;
+                    background-clip: text;
+                    letter-spacing: 2px;
+                    margin-bottom: 15px;
+                }
+                .subtitle {
+                    font-size: 22px;
+                    font-weight: 300;
+                    color: #ccc;
+                    margin-bottom: 8px;
+                    letter-spacing: 1px;
+                }
+                .subtitle strong {
+                    color: #ff6b6b;
+                    font-weight: 600;
+                }
+                .desc {
+                    font-size: 18px;
+                    color: #aaa;
+                    margin: 20px 0 30px;
+                    line-height: 1.6;
+                    border-top: 1px solid rgba(255,255,255,0.05);
+                    padding-top: 25px;
+                }
+                .brand {
+                    font-size: 14px;
+                    color: #555;
+                    letter-spacing: 2px;
+                    text-transform: uppercase;
+                    margin-top: 20px;
+                    opacity: 0.7;
+                }
+                .brand span {
+                    color: #888;
+                    font-weight: 600;
+                }
+                .glow {
+                    position: absolute;
+                    width: 200px;
+                    height: 200px;
+                    border-radius: 50%;
+                    background: rgba(255, 50, 50, 0.08);
+                    filter: blur(80px);
+                    top: -50px;
+                    right: -50px;
+                    pointer-events: none;
+                }
+                .glow2 {
+                    position: absolute;
+                    width: 300px;
+                    height: 300px;
+                    border-radius: 50%;
+                    background: rgba(100, 50, 255, 0.06);
+                    filter: blur(100px);
+                    bottom: -100px;
+                    left: -100px;
+                    pointer-events: none;
+                }
+                .container {
+                    position: relative;
+                    overflow: hidden;
+                }
+                @media (max-width: 500px) {
+                    .container { padding: 30px 20px; }
+                    h1 { font-size: 28px; }
+                    .icon { font-size: 60px; }
+                    .subtitle { font-size: 18px; }
+                    .desc { font-size: 15px; }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="glow"></div>
+                <div class="glow2"></div>
+                <div class="icon">🔒</div>
+                <h1>THIS SCRIPT IS PROTECTED</h1>
+                <div class="subtitle">You <strong>Cannot</strong> Bypass It</div>
+                <div class="desc">
+                    Only valid key holders can run this script.<br>
+                    Access is restricted to authorized users only.
+                </div>
+                <div class="brand">⚡ <span>M1rage</span> Protection System ⚡</div>
+            </div>
+        </body>
+        </html>
+        ''', 200, {'Content-Type': 'text/html'}
 
 @app.route("/checkkey")
 def check_key():
