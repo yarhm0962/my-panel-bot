@@ -200,9 +200,10 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
 class PanelView(discord.ui.View):
-    def __init__(self, channel_id):
+    def __init__(self, channel_id, message_id):
         super().__init__(timeout=None)
         self.channel_id = channel_id
+        self.message_id = message_id
 
     @discord.ui.button(label="Redeem Key", emoji="🔑", style=discord.ButtonStyle.green, custom_id="redeem_btn")
     async def redeem_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -226,9 +227,13 @@ class PanelView(discord.ui.View):
             if uid not in users:
                 return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
 
+            # Find panel by message_id (stored in the view)
             panels = load_json(PANEL_FILE)
-            channel_id = str(interaction.channel_id)
-            panel = panels.get(channel_id)
+            panel = None
+            for pid, pdata in panels.items():
+                if pdata.get("message_id") == self.message_id:
+                    panel = pdata
+                    break
             if not panel or "script_id" not in panel or not panel["script_id"]:
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
@@ -320,18 +325,29 @@ async def create_panel(interaction: discord.Interaction, script_title: str, desc
         embed.set_footer(text=f"{interaction.user.display_name} Control Panel")
 
         channel_id = str(interaction.channel_id)
+
+        # Send the panel message
+        await interaction.response.send_message(embed=embed, view=PanelView(channel_id, None))
+        message = await interaction.original_response()
+        message_id = str(message.id)
+
+        # Store panel data with message_id
         panels = load_json(PANEL_FILE)
         panels[channel_id] = {
             "title": script_title,
             "description": description,
             "channel_id": channel_id,
+            "message_id": message_id,
             "created_at": datetime.utcnow().isoformat(),
             "creator": interaction.user.display_name,
             "script_id": None
         }
         save_json(PANEL_FILE, panels)
 
-        await interaction.response.send_message(embed=embed, view=PanelView(channel_id))
+        # Update the view with the correct message_id
+        view = PanelView(channel_id, message_id)
+        await message.edit(view=view)
+
     except Exception as e:
         print(f"create_panel error: {e}")
         traceback.print_exc()
@@ -442,17 +458,25 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
 @client.tree.command(name="add_script", description="Add Lua script file to a panel (Admin only)")
-@app_commands.describe(choose_panel="Channel ID of the panel (must have been created with /create_panel)", file="Upload .lua or .txt file")
-@app_commands.rename(choose_panel="choose-panel")
-async def add_script(interaction: discord.Interaction, choose_panel: str, file: discord.Attachment):
+@app_commands.describe(message_id="Message ID of the panel embed (right-click the panel message > Copy ID)", file="Upload .lua or .txt file")
+@app_commands.rename(message_id="message-id")
+async def add_script(interaction: discord.Interaction, message_id: str, file: discord.Attachment):
     try:
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("No permission.", ephemeral=True)
 
+        # Find panel by message_id
         panels = load_json(PANEL_FILE)
-        panel = panels.get(choose_panel)
+        panel = None
+        panel_key = None
+        for pid, pdata in panels.items():
+            if pdata.get("message_id") == message_id:
+                panel = pdata
+                panel_key = pid
+                break
+
         if not panel:
-            return await interaction.response.send_message(f"❌ No panel found with channel ID `{choose_panel}`. Create one with `/create_panel`.", ephemeral=True)
+            return await interaction.response.send_message(f"❌ No panel found with message ID `{message_id}`. Create one with `/create_panel`.", ephemeral=True)
 
         if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
             return await interaction.response.send_message("❌ Only .lua or .txt files accepted.", ephemeral=True)
@@ -464,20 +488,25 @@ async def add_script(interaction: discord.Interaction, choose_panel: str, file: 
 
         obfuscated_code = obfuscate_script(lua_code)
 
-        script_id = generate_script_id()
+        # If panel already has a script_id, reuse it; otherwise generate new
+        script_id = panel.get("script_id")
+        if not script_id:
+            script_id = generate_script_id()
+            panel["script_id"] = script_id
 
+        # Save script content
         scripts = load_json(SCRIPTS_FILE)
         scripts[script_id] = obfuscated_code
         save_json(SCRIPTS_FILE, scripts)
 
-        panel["script_id"] = script_id
-        panels[choose_panel] = panel
+        # Update panel (just in case)
+        panels[panel_key] = panel
         save_json(PANEL_FILE, panels)
 
         direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
 
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
-        embed.add_field(name="Panel", value=f"Channel ID: {choose_panel}", inline=False)
+        embed.add_field(name="Panel", value=f"Message ID: {message_id}", inline=False)
         embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
         embed.add_field(name="Protection", value="Server‑validated key + Base64 encoding", inline=False)
@@ -509,7 +538,7 @@ def check_key():
             return {"valid": False, "reason": "No key provided"}
 
         keys = load_json(KEYS_FILE)
-        print(f"Checking key: {key} | keys in DB: {list(keys.keys())}")  # DEBUG
+        print(f"Checking key: {key} | keys in DB: {list(keys.keys())}")
 
         if key not in keys or not keys[key]["active"]:
             return {"valid": False, "reason": "Invalid key"}
