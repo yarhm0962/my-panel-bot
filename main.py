@@ -45,9 +45,6 @@ def load_json(filename):
             result[doc['_id']] = doc
         else:
             if filename == "users":
-                # doc format: { "_id": key, "value": { ... } }
-                # We'll store as {"key": value} but we need to handle new structure
-                # We'll just return as-is.
                 result[doc['key']] = doc['value']
             else:
                 if 'key' in doc and 'value' in doc:
@@ -72,7 +69,6 @@ def save_json(filename, data):
             col.insert_one(value)
     else:
         for key, value in data.items():
-            # For users, we want to store as {"key": key, "value": value}
             col.insert_one({"key": key, "value": value})
 
 KEYS_FILE = "keys"
@@ -170,6 +166,13 @@ end
     wrapper = wrapper.replace("{encoded}", encoded)
     return wrapper
 
+def ensure_panel_guild(panel_data, guild_id):
+    """Add guild_id to panel if missing and return True if changed."""
+    if panel_data and not panel_data.get("guild_id"):
+        panel_data["guild_id"] = guild_id
+        return True
+    return False
+
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
         label="Key to Redeem",
@@ -185,7 +188,7 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             users = load_json(USERS_FILE)
             uid = str(interaction.user.id)
             guild_id = str(interaction.guild.id)
-            # Find panel by message_id or channel_id
+
             panels = load_json(PANEL_FILE)
             panel = None
             panel_id = None
@@ -197,7 +200,11 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if not panel:
                 return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
 
-            # Check if key exists and belongs to this panel and guild
+            # Migrate panel guild_id if missing
+            if ensure_panel_guild(panel, guild_id):
+                panels[panel_id] = panel
+                save_json(PANEL_FILE, panels)
+
             key_data = keys.get(key)
             if not key_data or not key_data.get("active"):
                 return await interaction.response.send_message("❌ Invalid or expired key.", ephemeral=True)
@@ -209,7 +216,6 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if datetime.now(timezone.utc) > expires:
                 return await interaction.response.send_message("❌ This key has expired.", ephemeral=True)
 
-            # Store redemption per panel
             user_data = users.get(uid, {"panels": {}})
             if panel_id not in user_data["panels"]:
                 user_data["panels"][panel_id] = {"keys": []}
@@ -327,7 +333,6 @@ class PanelView(discord.ui.View):
             uid = str(interaction.user.id)
             guild_id = str(interaction.guild.id)
 
-            # Find panel
             panels = load_json(PANEL_FILE)
             panel = None
             panel_id = None
@@ -344,13 +349,19 @@ class PanelView(discord.ui.View):
             if not panel:
                 return await interaction.response.send_message("⚠️ Panel not found.", ephemeral=True)
 
-            # Check if user has redeemed key for this panel
+            # Migrate if needed
+            if ensure_panel_guild(panel, guild_id):
+                panels[panel_id] = panel
+                save_json(PANEL_FILE, panels)
+
+            if panel.get("guild_id") != guild_id:
+                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
+
             user_data = users.get(uid, {})
             panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel. Redeem one using the button above.", ephemeral=True)
 
-            # Get active keys
             active_keys = [k for k in panel_keys if k in keys and keys[k]["active"] and keys[k].get("guild_id") == guild_id and keys[k].get("panel_id") == panel_id]
             if not active_keys:
                 return await interaction.response.send_message("❌ All your keys for this panel are invalid or expired. Please redeem a new key.", ephemeral=True)
@@ -396,6 +407,13 @@ class PanelView(discord.ui.View):
 
             if not panel:
                 return await interaction.response.send_message("⚠️ Panel not found.", ephemeral=True)
+
+            if ensure_panel_guild(panel, guild_id):
+                panels[panel_id] = panel
+                save_json(PANEL_FILE, panels)
+
+            if panel.get("guild_id") != guild_id:
+                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
 
             user_data = users.get(uid, {})
             panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
@@ -471,12 +489,18 @@ class PanelView(discord.ui.View):
             if not panel:
                 return await interaction.response.send_message("⚠️ Panel not found.", ephemeral=True)
 
+            if ensure_panel_guild(panel, guild_id):
+                panels[panel_id] = panel
+                save_json(PANEL_FILE, panels)
+
+            if panel.get("guild_id") != guild_id:
+                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
+
             user_data = users.get(uid, {})
             panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel.", ephemeral=True)
 
-            # Gather active keys for this panel
             active_keys_data = []
             for k in panel_keys:
                 if k in keys and keys[k]["active"] and keys[k].get("guild_id") == guild_id and keys[k].get("panel_id") == panel_id:
@@ -556,26 +580,36 @@ async def create_panel(interaction: discord.Interaction, script_title: str, role
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
 @client.tree.command(name="genkey", description="Generate a new key for a specific panel")
-@app_commands.describe(panel="Channel ID of the panel (must be a valid panel)", days="Days active")
+@app_commands.describe(panel="Channel ID or Message ID of the panel", days="Days active")
 async def genkey(interaction: discord.Interaction, panel: str, days: int):
     try:
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("No permission.", ephemeral=True)
 
         panels = load_json(PANEL_FILE)
-        if panel not in panels:
-            # Also try by message_id
-            found = None
+        panel_id = None
+        panel_data = None
+
+        # Try by channel_id
+        if panel in panels:
+            panel_id = panel
+            panel_data = panels[panel]
+        else:
+            # Try by message_id
             for pid, pdata in panels.items():
                 if pdata.get("message_id") == panel:
-                    found = pid
+                    panel_id = pid
+                    panel_data = pdata
                     break
-            if not found:
-                return await interaction.response.send_message(f"❌ Panel not found. Use the channel ID or message ID of the panel.", ephemeral=True)
-            panel = found
 
-        panel_data = panels[panel]
+        if not panel_data:
+            return await interaction.response.send_message(f"❌ Panel not found. Use the channel ID or message ID of the panel.", ephemeral=True)
+
         guild_id = str(interaction.guild.id)
+        if ensure_panel_guild(panel_data, guild_id):
+            panels[panel_id] = panel_data
+            save_json(PANEL_FILE, panels)
+
         if panel_data.get("guild_id") != guild_id:
             return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
 
@@ -590,7 +624,7 @@ async def genkey(interaction: discord.Interaction, panel: str, days: int):
             "owner_name": interaction.user.name,
             "created_at": now.isoformat(),
             "guild_id": guild_id,
-            "panel_id": panel
+            "panel_id": panel_id
         }
         save_json(KEYS_FILE, keys)
         await interaction.response.send_message(f"✅ Key Generated for panel **{panel_data.get('title', 'Unknown')}** :\n`{user_key}`\nValid: {days} days", ephemeral=True)
@@ -607,7 +641,6 @@ async def view_all_keys(interaction: discord.Interaction):
 
         guild_id = str(interaction.guild.id)
         keys = load_json(KEYS_FILE)
-        # Filter by guild_id
         guild_keys = {k: v for k, v in keys.items() if v.get("guild_id") == guild_id}
         if not guild_keys:
             embed = discord.Embed(title="📋 All Keys", description="No keys found for this server.", color=discord.Color.dark_purple())
@@ -697,6 +730,7 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment,
         panels = load_json(PANEL_FILE)
         panel = None
         panel_key = None
+        guild_id = str(interaction.guild.id)
 
         if message_id:
             for pid, pdata in panels.items():
@@ -716,7 +750,12 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment,
                     ephemeral=True
                 )
 
-        if panel.get("guild_id") != str(interaction.guild.id):
+        # Migrate if missing guild_id
+        if ensure_panel_guild(panel, guild_id):
+            panels[panel_key] = panel
+            save_json(PANEL_FILE, panels)
+
+        if panel.get("guild_id") != guild_id:
             return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
 
         if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
