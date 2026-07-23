@@ -42,7 +42,6 @@ def load_json(filename):
     result = {}
     for doc in docs:
         if filename == "panel":
-            # Use _id as key (which is the channel_id for old panels, or message_id for new)
             result[doc['_id']] = doc
         else:
             if 'key' in doc and 'value' in doc:
@@ -106,14 +105,18 @@ def obfuscate_script(lua_code):
     encoded = base64.b64encode(lua_code.encode()).decode()
 
     wrapper = f'''
--- ========== KEY CHECK ==========
+-- ============================================================
+-- KEY VALIDATION (NO HARDCODED KEY – WORKS WITH ANY VALID KEY)
+-- ============================================================
 local key = _G.SCRIPT_KEY
 if not key or key == "" then
     game:GetService("Players").LocalPlayer:Kick('Pls Put Your _G.SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
     return
 end
 
--- ========== BASE64 DECODER ==========
+-- ============================================================
+-- BASE64 DECODER (STANDARD, WORKS IN ROBLOX)
+-- ============================================================
 local function b64decode(data)
     local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = string.gsub(data, '[^'..b..'=]', '')
@@ -135,7 +138,9 @@ local function b64decode(data)
     return table.concat(result)
 end
 
--- ========== SERVER VALIDATION ==========
+-- ============================================================
+-- SERVER VALIDATION – CALLS YOUR /checkkey ENDPOINT
+-- ============================================================
 local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key
 local success, response = pcall(function()
     return game:GetService("HttpService"):JSONDecode(game:HttpGet(url))
@@ -146,15 +151,15 @@ if not success then
     return
 end
 
-print("Key validation response:", response)
-
 if not response or not response.valid then
     local msg = response and response.reason or "Invalid or expired key"
     game:GetService("Players").LocalPlayer:Kick('Invalid or expired key: ' .. msg)
     return
 end
 
--- ========== DECODE AND EXECUTE ==========
+-- ============================================================
+-- DECODE AND EXECUTE THE ORIGINAL SCRIPT
+-- ============================================================
 local decoded = b64decode("{encoded}")
 local fn = loadstring(decoded)
 if not fn then
@@ -227,7 +232,6 @@ class PanelView(discord.ui.View):
             if uid not in users:
                 return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
 
-            # Find panel by message_id first, fallback to channel_id
             panels = load_json(PANEL_FILE)
             panel = None
             if self.message_id:
@@ -236,7 +240,6 @@ class PanelView(discord.ui.View):
                         panel = p
                         break
             if not panel:
-                # fallback: use channel_id
                 panel = panels.get(self.channel_id)
 
             if not panel or "script_id" not in panel or not panel["script_id"]:
@@ -331,12 +334,10 @@ async def create_panel(interaction: discord.Interaction, script_title: str, desc
 
         channel_id = str(interaction.channel_id)
 
-        # Send the panel message
         await interaction.response.send_message(embed=embed, view=PanelView(channel_id, None))
         message = await interaction.original_response()
         message_id = str(message.id)
 
-        # Store panel data with message_id
         panels = load_json(PANEL_FILE)
         panels[channel_id] = {
             "title": script_title,
@@ -349,7 +350,6 @@ async def create_panel(interaction: discord.Interaction, script_title: str, desc
         }
         save_json(PANEL_FILE, panels)
 
-        # Update the view with the correct message_id
         view = PanelView(channel_id, message_id)
         await message.edit(view=view)
 
@@ -475,7 +475,6 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment,
         panel_key = None
 
         if message_id:
-            # Try to find by message_id first
             for pid, pdata in panels.items():
                 if pdata.get("message_id") == message_id:
                     panel = pdata
@@ -483,7 +482,6 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment,
                     break
 
         if not panel:
-            # Fallback: use current channel's panel
             channel_id = str(interaction.channel_id)
             if channel_id in panels:
                 panel = panels[channel_id]
@@ -504,18 +502,15 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment,
 
         obfuscated_code = obfuscate_script(lua_code)
 
-        # Reuse existing script_id if present, else generate new
         script_id = panel.get("script_id")
         if not script_id:
             script_id = generate_script_id()
             panel["script_id"] = script_id
 
-        # Save script content
         scripts = load_json(SCRIPTS_FILE)
         scripts[script_id] = obfuscated_code
         save_json(SCRIPTS_FILE, scripts)
 
-        # Update panel
         panels[panel_key] = panel
         save_json(PANEL_FILE, panels)
 
@@ -556,23 +551,14 @@ def check_key():
             return {"valid": False, "reason": "No key provided"}
 
         keys = load_json(KEYS_FILE)
-        print(f"[DEBUG] Checking key: {key}")
-        print(f"[DEBUG] All keys: {list(keys.keys())}")
-
         if key not in keys or not keys[key]["active"]:
-            response = {"valid": False, "reason": "Invalid key"}
-            print(f"[DEBUG] Response: {response}")
-            return response
+            return {"valid": False, "reason": "Invalid key"}
 
         expires = datetime.fromisoformat(keys[key]["expires"])
         if datetime.now(timezone.utc) > expires:
-            response = {"valid": False, "reason": "Key expired"}
-            print(f"[DEBUG] Response: {response}")
-            return response
+            return {"valid": False, "reason": "Key expired"}
 
-        response = {"valid": True, "expires": keys[key]["expires"]}
-        print(f"[DEBUG] Response: {response}")
-        return response
+        return {"valid": True, "expires": keys[key]["expires"]}
     except Exception as e:
         print(f"check_key error: {e}")
         return {"valid": False, "reason": "Server error"}
