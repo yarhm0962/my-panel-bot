@@ -105,13 +105,9 @@ def generate_script_id():
 
 def minify_lua(code):
     """Remove comments and extra whitespace from Lua code."""
-    # Remove single-line comments
     code = re.sub(r'--[^\n]*', '', code)
-    # Remove multi-line comments
     code = re.sub(r'--\[\[.*?\]\]', '', code, flags=re.DOTALL)
-    # Remove extra whitespace
     code = re.sub(r'\s+', ' ', code)
-    # Remove spaces around operators
     code = re.sub(r'\s*=\s*', '=', code)
     code = re.sub(r'\s*\.\.\s*', '..', code)
     code = re.sub(r'\s*\.\.\.\s*', '...', code)
@@ -125,7 +121,6 @@ def minify_lua(code):
     code = re.sub(r'\s*\)\s*', ')', code)
     code = re.sub(r'\s*{\s*', '{', code)
     code = re.sub(r'\s*}\s*', '}', code)
-    # Remove multiple spaces
     code = re.sub(r' +', ' ', code)
     return code.strip()
 
@@ -139,46 +134,53 @@ local u="https://{WEBSITE_DOMAIN}/checkkey?key="..a.."&panel={panel_id}"local s,
 local d=b("{encoded}")local f=loadstring(d)if not f then game:GetService("Players").LocalPlayer:Kick('Invalid script')return nil end f()
 _G.SCRIPT_KEY=nil if getgenv then getgenv().SCRIPT_KEY=nil end
 '''
-    # Replace placeholders
     wrapper = wrapper.replace("{WEBSITE_DOMAIN}", WEBSITE_DOMAIN)
     wrapper = wrapper.replace("{encoded}", encoded)
     wrapper = wrapper.replace("{panel_id}", panel_id)
-    # Minify to hide it further
     wrapper = minify_lua(wrapper)
     return wrapper
 
 def upload_to_pastes(lua_code):
-    """Upload to pastes.dev with proper JSON handling. Returns paste_id or None."""
+    """Upload to pastes.dev with detailed logging."""
     headers = {
-        "User-Agent": "M1rage-Bot/1.0",
+        "User-Agent": "curl/7.68.0",  # mimic curl
         "Content-Type": "text/plain"
     }
     for attempt in range(3):
         try:
+            print(f"[pastes.dev] Attempt {attempt+1}, size: {len(lua_code)} bytes")
             response = requests.post(
                 "https://api.pastes.dev/post",
-                data=lua_code.encode('utf-8'),
+                data=lua_code,  # send as string, not bytes
                 headers=headers,
                 timeout=15,
                 allow_redirects=True
             )
+            print(f"[pastes.dev] Status: {response.status_code}")
+            print(f"[pastes.dev] Response: {response.text[:500]}")
             if response.status_code == 200:
-                # Try to parse as JSON first
+                # Try to parse as JSON
                 try:
                     data = response.json()
                     paste_id = data.get("key")
                     if paste_id:
+                        print(f"[pastes.dev] Success! Paste ID: {paste_id}")
                         return paste_id
                 except:
                     pass
-                # Fallback: plain text response
+                # Plain text
                 paste_id = response.text.strip()
                 if paste_id and len(paste_id) > 0 and not paste_id.startswith('<!DOCTYPE'):
+                    print(f"[pastes.dev] Success! Paste ID (plain): {paste_id}")
                     return paste_id
-            time.sleep(1)
+            else:
+                print(f"[pastes.dev] HTTP error: {response.status_code}")
         except Exception as e:
-            print(f"pastes.dev error (attempt {attempt+1}): {e}")
+            print(f"[pastes.dev] Exception: {e}")
+            traceback.print_exc()
+        if attempt < 2:
             time.sleep(1)
+    print("[pastes.dev] All attempts failed.")
     return None
 
 def ensure_panel_guild(panel_data, guild_id):
