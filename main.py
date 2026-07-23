@@ -334,6 +334,7 @@ async def genkey(interaction: discord.Interaction, days: int):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
+# ========== UPDATED /view-all-keys WITH EMBED ==========
 @client.tree.command(name="view-all-keys", description="View all keys (Admin only)")
 async def view_all_keys(interaction: discord.Interaction):
     try:
@@ -342,33 +343,44 @@ async def view_all_keys(interaction: discord.Interaction):
 
         keys = load_json(KEYS_FILE)
         if not keys:
-            return await interaction.response.send_message("No keys found.", ephemeral=True)
+            embed = discord.Embed(title="📋 All Keys", description="No keys found.", color=discord.Color.dark_purple())
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        lines = []
+        # Build the embed(s)
+        embeds = []
+        current_embed = discord.Embed(title="📋 All Keys", color=discord.Color.dark_purple())
+        current_embed.set_footer(text=f"Total: {len(keys)} keys")
+        field_count = 0
+
         for k, v in keys.items():
             status = "🟢 Active" if v["active"] else "🔴 Inactive"
             expires = datetime.fromisoformat(v["expires"])
             if datetime.utcnow() > expires:
                 status = "🔴 Expired"
             owner = v.get("owner_name", v.get("owner", "Unknown"))
-            lines.append(f"**{k}** — {status} — expires: {v['expires']} — owner: {owner}")
 
-        chunks = []
-        current = ""
-        for line in lines:
-            if len(current) + len(line) + 1 > 1900:
-                chunks.append(current)
-                current = ""
-            current += line + "\n"
-        if current:
-            chunks.append(current)
+            # Format: `Key` - Status - expires: date - owner: name
+            line = f"`{k}` — {status} — expires: {v['expires']} — owner: {owner}"
 
-        if not chunks:
-            return await interaction.response.send_message("No keys to display.", ephemeral=True)
+            # If adding this line would exceed field limit or embed size, send current embed and start a new one
+            if len(current_embed.fields) >= 25 or len(current_embed) + len(line) > 6000:
+                embeds.append(current_embed)
+                current_embed = discord.Embed(title="📋 All Keys (continued)", color=discord.Color.dark_purple())
+                current_embed.set_footer(text=f"Total: {len(keys)} keys")
+                field_count = 0
 
-        await interaction.response.send_message(f"**All Keys:**\n{chunks[0]}", ephemeral=True)
-        for chunk in chunks[1:]:
-            await interaction.followup.send(chunk, ephemeral=True)
+            current_embed.add_field(name=f"Key #{field_count+1}", value=line, inline=False)
+            field_count += 1
+
+        if current_embed.fields:
+            embeds.append(current_embed)
+
+        # Send the first embed
+        await interaction.response.send_message(embed=embeds[0], ephemeral=True)
+        # Send any remaining embeds as follow-ups
+        for embed in embeds[1:]:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
     except Exception as e:
         print(f"view_all_keys error: {e}")
         traceback.print_exc()
