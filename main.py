@@ -167,22 +167,17 @@ end
     return wrapper
 
 def ensure_panel_guild(panel_data, guild_id):
-    """Add guild_id to panel if missing and return True if changed."""
     if panel_data and not panel_data.get("guild_id"):
         panel_data["guild_id"] = guild_id
         return True
     return False
 
 def find_panel(panels, lookup_id):
-    """Find panel by channel_id, message_id, or _id. Returns (panel_id, panel_data) or (None, None)."""
-    # Try as channel_id
     if lookup_id in panels:
         return lookup_id, panels[lookup_id]
-    # Try as message_id
     for pid, pdata in panels.items():
         if pdata.get("message_id") == lookup_id:
             return pid, pdata
-    # Try as _id (string)
     for pid, pdata in panels.items():
         if str(pid) == lookup_id:
             return pid, pdata
@@ -207,7 +202,6 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             panels = load_json(PANEL_FILE)
             panel = None
             panel_id = None
-            # Find panel by message_id or channel_id
             for pid, pdata in panels.items():
                 if pdata.get("message_id") == str(interaction.message.id) or pdata.get("channel_id") == str(interaction.channel_id):
                     panel = pdata
@@ -723,32 +717,25 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="add_script", description="Add Lua script file to a panel (Admin only)")
-@app_commands.describe(message_id="Message ID of the panel embed (optional – if not given, uses current channel's panel)", file="Upload .lua or .txt file")
+# ========== FIX: add_script – message_id is now REQUIRED ==========
+@client.tree.command(name="add_script", description="Add a Lua script file to a specific panel (Admin only)")
+@app_commands.describe(message_id="Message ID of the panel embed (REQUIRED – right-click the panel message and Copy ID)", file="Upload .lua or .txt file")
 @app_commands.rename(message_id="message-id")
-async def add_script(interaction: discord.Interaction, file: discord.Attachment, message_id: str = None):
+async def add_script(interaction: discord.Interaction, message_id: str, file: discord.Attachment):
     try:
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("No permission.", ephemeral=True)
 
         panels = load_json(PANEL_FILE)
-        panel = None
-        panel_key = None
-        guild_id = str(interaction.guild.id)
-
-        if message_id:
-            panel_key, panel = find_panel(panels, message_id)
-
-        if not panel:
-            channel_id = str(interaction.channel_id)
-            panel_key, panel = find_panel(panels, channel_id)
+        panel_key, panel = find_panel(panels, message_id)
 
         if not panel:
             return await interaction.response.send_message(
-                f"❌ No panel found in this channel. Create one with `/create_panel`, or provide a valid `message-id`.\nHint: Right-click the panel message and copy the ID, or use the channel ID.",
+                f"❌ No panel found with message ID `{message_id}`. Please right-click the panel message and copy the ID.",
                 ephemeral=True
             )
 
+        guild_id = str(interaction.guild.id)
         if ensure_panel_guild(panel, guild_id):
             panels[panel_key] = panel
             save_json(PANEL_FILE, panels)
@@ -781,9 +768,7 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment,
         direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
 
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
-        embed.add_field(name="Panel", value=f"Channel ID: {panel_key}", inline=False)
-        if message_id:
-            embed.add_field(name="Message ID", value=message_id, inline=False)
+        embed.add_field(name="Panel", value=f"Message ID: {message_id}", inline=False)
         embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
         embed.add_field(name="Protection", value="Server‑validated key + Base64 encoding", inline=False)
