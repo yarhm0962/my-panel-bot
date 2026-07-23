@@ -4,7 +4,7 @@ import json
 import random
 import os
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, request
 import threading
 import sys
@@ -42,6 +42,7 @@ def load_json(filename):
     result = {}
     for doc in docs:
         if filename == "panel":
+            # Use _id as key (which is the channel_id for old panels, or message_id for new)
             result[doc['_id']] = doc
         else:
             if 'key' in doc and 'value' in doc:
@@ -145,7 +146,6 @@ if not success then
     return
 end
 
--- Print server response to console for debugging
 print("Key validation response:", response)
 
 if not response or not response.valid then
@@ -184,10 +184,10 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
                 return await interaction.response.send_message("❌ Invalid or expired key.", ephemeral=True)
 
             expires = datetime.fromisoformat(keys[key]["expires"])
-            if datetime.utcnow() > expires:
+            if datetime.now(timezone.utc) > expires:
                 return await interaction.response.send_message("❌ This key has expired.", ephemeral=True)
 
-            users[uid] = {"key": key, "redeemed": datetime.utcnow().isoformat()}
+            users[uid] = {"key": key, "redeemed": datetime.now(timezone.utc).isoformat()}
             save_json(USERS_FILE, users)
 
             embed = discord.Embed(title="✅ Key Redeemed Successfully!", color=discord.Color.green())
@@ -200,7 +200,7 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
 class PanelView(discord.ui.View):
-    def __init__(self, channel_id, message_id):
+    def __init__(self, channel_id, message_id=None):
         super().__init__(timeout=None)
         self.channel_id = channel_id
         self.message_id = message_id
@@ -227,13 +227,18 @@ class PanelView(discord.ui.View):
             if uid not in users:
                 return await interaction.response.send_message("❌ Redeem your key first using the button above.", ephemeral=True)
 
-            # Find panel by message_id (stored in the view)
+            # Find panel by message_id first, fallback to channel_id
             panels = load_json(PANEL_FILE)
             panel = None
-            for pid, pdata in panels.items():
-                if pdata.get("message_id") == self.message_id:
-                    panel = pdata
-                    break
+            if self.message_id:
+                for p in panels.values():
+                    if p.get("message_id") == self.message_id:
+                        panel = p
+                        break
+            if not panel:
+                # fallback: use channel_id
+                panel = panels.get(self.channel_id)
+
             if not panel or "script_id" not in panel or not panel["script_id"]:
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
@@ -338,7 +343,7 @@ async def create_panel(interaction: discord.Interaction, script_title: str, desc
             "description": description,
             "channel_id": channel_id,
             "message_id": message_id,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "creator": interaction.user.display_name,
             "script_id": None
         }
@@ -361,7 +366,7 @@ async def genkey(interaction: discord.Interaction, days: int):
             return await interaction.response.send_message("No permission.", ephemeral=True)
         user_key = generate_user_key()
         keys = load_json(KEYS_FILE)
-        expires = (datetime.utcnow() + timedelta(days=days)).isoformat()
+        expires = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
         keys[user_key] = {
             "active": True,
             "expires": expires,
@@ -394,7 +399,7 @@ async def view_all_keys(interaction: discord.Interaction):
         for k, v in keys.items():
             status = "🟢 Active" if v["active"] else "🔴 Inactive"
             expires = datetime.fromisoformat(v["expires"])
-            if datetime.utcnow() > expires:
+            if datetime.now(timezone.utc) > expires:
                 status = "🔴 Expired"
             owner = v.get("owner_name", v.get("owner", "Unknown"))
             line = f"`{k}` — {status} — expires: {v['expires']} — owner: {owner}"
@@ -458,25 +463,36 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
 @client.tree.command(name="add_script", description="Add Lua script file to a panel (Admin only)")
-@app_commands.describe(message_id="Message ID of the panel embed (right-click the panel message > Copy ID)", file="Upload .lua or .txt file")
+@app_commands.describe(message_id="Message ID of the panel embed (optional – if not given, uses current channel's panel)", file="Upload .lua or .txt file")
 @app_commands.rename(message_id="message-id")
-async def add_script(interaction: discord.Interaction, message_id: str, file: discord.Attachment):
+async def add_script(interaction: discord.Interaction, file: discord.Attachment, message_id: str = None):
     try:
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("No permission.", ephemeral=True)
 
-        # Find panel by message_id
         panels = load_json(PANEL_FILE)
         panel = None
         panel_key = None
-        for pid, pdata in panels.items():
-            if pdata.get("message_id") == message_id:
-                panel = pdata
-                panel_key = pid
-                break
+
+        if message_id:
+            # Try to find by message_id first
+            for pid, pdata in panels.items():
+                if pdata.get("message_id") == message_id:
+                    panel = pdata
+                    panel_key = pid
+                    break
 
         if not panel:
-            return await interaction.response.send_message(f"❌ No panel found with message ID `{message_id}`. Create one with `/create_panel`.", ephemeral=True)
+            # Fallback: use current channel's panel
+            channel_id = str(interaction.channel_id)
+            if channel_id in panels:
+                panel = panels[channel_id]
+                panel_key = channel_id
+            else:
+                return await interaction.response.send_message(
+                    f"❌ No panel found in this channel. Create one with `/create_panel`, or provide a valid `message-id`.",
+                    ephemeral=True
+                )
 
         if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
             return await interaction.response.send_message("❌ Only .lua or .txt files accepted.", ephemeral=True)
@@ -488,7 +504,7 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
 
         obfuscated_code = obfuscate_script(lua_code)
 
-        # If panel already has a script_id, reuse it; otherwise generate new
+        # Reuse existing script_id if present, else generate new
         script_id = panel.get("script_id")
         if not script_id:
             script_id = generate_script_id()
@@ -499,14 +515,16 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         scripts[script_id] = obfuscated_code
         save_json(SCRIPTS_FILE, scripts)
 
-        # Update panel (just in case)
+        # Update panel
         panels[panel_key] = panel
         save_json(PANEL_FILE, panels)
 
         direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
 
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
-        embed.add_field(name="Panel", value=f"Message ID: {message_id}", inline=False)
+        embed.add_field(name="Panel", value=f"Channel ID: {panel_key}", inline=False)
+        if message_id:
+            embed.add_field(name="Message ID", value=message_id, inline=False)
         embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
         embed.add_field(name="Protection", value="Server‑validated key + Base64 encoding", inline=False)
@@ -538,16 +556,23 @@ def check_key():
             return {"valid": False, "reason": "No key provided"}
 
         keys = load_json(KEYS_FILE)
-        print(f"Checking key: {key} | keys in DB: {list(keys.keys())}")
+        print(f"[DEBUG] Checking key: {key}")
+        print(f"[DEBUG] All keys: {list(keys.keys())}")
 
         if key not in keys or not keys[key]["active"]:
-            return {"valid": False, "reason": "Invalid key"}
+            response = {"valid": False, "reason": "Invalid key"}
+            print(f"[DEBUG] Response: {response}")
+            return response
 
         expires = datetime.fromisoformat(keys[key]["expires"])
-        if datetime.utcnow() > expires:
-            return {"valid": False, "reason": "Key expired"}
+        if datetime.now(timezone.utc) > expires:
+            response = {"valid": False, "reason": "Key expired"}
+            print(f"[DEBUG] Response: {response}")
+            return response
 
-        return {"valid": True, "expires": keys[key]["expires"]}
+        response = {"valid": True, "expires": keys[key]["expires"]}
+        print(f"[DEBUG] Response: {response}")
+        return response
     except Exception as e:
         print(f"check_key error: {e}")
         return {"valid": False, "reason": "Server error"}
