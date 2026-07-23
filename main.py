@@ -10,6 +10,9 @@ import threading
 import sys
 import traceback
 import pymongo
+import urllib.request
+import urllib.error
+import urllib.parse
 
 TOKEN = os.getenv("TOKEN")
 WEBSITE_DOMAIN = os.getenv("WEBSITE_DOMAIN", "my-panel-bot.onrender.com")
@@ -734,10 +737,10 @@ async def on_ready():
             client.add_view(view)
 
 # ============================================================
-# COMMAND DEFINITIONS WITH SPACES
+# COMMAND DEFINITIONS – VALID NAMES (underscores)
 # ============================================================
 
-@client.tree.command(name="create panel", description="Create control panel")
+@client.tree.command(name="create_panel", description="Create control panel")
 @app_commands.describe(**{"script-title": "Embed title", "role": "Role to assign when user clicks 'Get Role'", "description": "Embed description (optional)"})
 @app_commands.rename(**{"script-title": "script_title"})
 async def create_panel(interaction: discord.Interaction, script_title: str, role: discord.Role, description: str = None):
@@ -780,7 +783,7 @@ async def create_panel(interaction: discord.Interaction, script_title: str, role
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="generate key", description="Generate one or more keys for a specific panel")
+@client.tree.command(name="generate_key", description="Generate one or more keys for a specific panel")
 @app_commands.describe(panel="Channel ID or Message ID of the panel", days="Days active", amount="Number of keys to generate (max 50, default 1)")
 async def genkey(interaction: discord.Interaction, panel: str, days: int, amount: int = 1):
     try:
@@ -856,7 +859,7 @@ async def genkey(interaction: discord.Interaction, panel: str, days: int, amount
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="view all keys", description="View all keys (Admin only) for this server")
+@client.tree.command(name="view_all_keys", description="View all keys (Admin only) for this server")
 async def view_all_keys(interaction: discord.Interaction):
     try:
         if not interaction.user.guild_permissions.administrator:
@@ -914,7 +917,7 @@ async def view_all_keys(interaction: discord.Interaction):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="delete keys", description="Delete one or more keys (Admin only)")
+@client.tree.command(name="delete_keys", description="Delete one or more keys (Admin only)")
 @app_commands.describe(key="Specific key to delete", user="Delete all keys for this user")
 async def delete_keys(interaction: discord.Interaction, key: str = None, user: discord.User = None):
     try:
@@ -952,7 +955,7 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="reset hwid", description="Reset HWID for a specific key (Admin only)")
+@client.tree.command(name="reset_hwid", description="Reset HWID for a specific key (Admin only)")
 @app_commands.describe(key="The key to reset HWID for")
 async def reset_hwid(interaction: discord.Interaction, key: str):
     try:
@@ -1098,7 +1101,7 @@ async def whitelist(interaction: discord.Interaction, panel: str, user: discord.
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="remove whitelist", description="Remove a user from the whitelist (Admin only)")
+@client.tree.command(name="remove_whitelist", description="Remove a user from the whitelist (Admin only)")
 @app_commands.describe(panel="Channel ID or Message ID of the panel", user="User to remove from whitelist")
 async def remove_whitelist(interaction: discord.Interaction, panel: str, user: discord.User):
     try:
@@ -1132,7 +1135,7 @@ async def remove_whitelist(interaction: discord.Interaction, panel: str, user: d
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="view whitelist", description="View all whitelisted users for a panel (Admin only)")
+@client.tree.command(name="view_whitelist", description="View all whitelisted users for a panel (Admin only)")
 @app_commands.describe(panel="Channel ID or Message ID of the panel")
 async def view_whitelist(interaction: discord.Interaction, panel: str):
     try:
@@ -1188,7 +1191,7 @@ async def view_whitelist(interaction: discord.Interaction, panel: str):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="add script", description="Add Lua script file to a panel (Admin only)")
+@client.tree.command(name="add_script", description="Add Lua script file to a panel (Admin only)")
 @app_commands.describe(**{"message-id": "Message ID of the panel embed (REQUIRED – right-click the panel message and Copy ID)", "file": "Upload .lua or .txt file"})
 @app_commands.rename(**{"message-id": "message_id"})
 async def add_script(interaction: discord.Interaction, message_id: str, file: discord.Attachment):
