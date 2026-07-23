@@ -161,6 +161,10 @@ if not fn then
     return nil
 end
 fn()
+_G.SCRIPT_KEY = nil
+if getgenv then
+    getgenv().SCRIPT_KEY = nil
+end
 '''
     wrapper = wrapper.replace("{WEBSITE_DOMAIN}", WEBSITE_DOMAIN)
     wrapper = wrapper.replace("{encoded}", encoded)
