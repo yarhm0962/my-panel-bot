@@ -26,7 +26,7 @@ db = mongo_client.get_database("bot_data")
 keys_col = db["keys"]
 users_col = db["users"]
 panel_col = db["panel"]
-# scripts_col is no longer needed – scripts are stored on pastes.dev
+scripts_col = db["scripts"]  # fallback storage
 
 def load_json(filename):
     if filename == "keys":
@@ -35,6 +35,8 @@ def load_json(filename):
         col = users_col
     elif filename == "panel":
         col = panel_col
+    elif filename == "scripts":
+        col = scripts_col
     else:
         return {}
     docs = list(col.find({}))
@@ -65,6 +67,8 @@ def save_json(filename, data):
         col = users_col
     elif filename == "panel":
         col = panel_col
+    elif filename == "scripts":
+        col = scripts_col
     else:
         return
     col.delete_many({})
@@ -79,6 +83,7 @@ def save_json(filename, data):
 KEYS_FILE = "keys"
 USERS_FILE = "users"
 PANEL_FILE = "panel"
+SCRIPTS_FILE = "scripts"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -104,6 +109,9 @@ def generate_user_key():
         part = ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(4))
         parts.append(part)
     return "-".join(parts)
+
+def generate_script_id():
+    return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
 def obfuscate_script(lua_code, panel_id):
     encoded = base64.b64encode(lua_code.encode()).decode()
@@ -169,7 +177,6 @@ end
     return wrapper
 
 def upload_to_pastes(lua_code):
-    """Upload obfuscated script to pastes.dev and return the paste ID."""
     try:
         headers = {
             "User-Agent": "M1rage-Bot/1.0",
@@ -230,12 +237,10 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if not panel:
                 return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
 
+            # Ensure guild_id is set for the panel (if missing)
             if ensure_panel_guild(panel, guild_id):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
-
-            if panel.get("guild_id") != guild_id:
-                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
 
             key_data = keys.get(key)
             if not key_data or not key_data.get("active"):
@@ -385,12 +390,12 @@ class PanelView(discord.ui.View):
             if not panel:
                 return await interaction.response.send_message("⚠️ Panel not found.", ephemeral=True)
 
+            # Ensure guild_id is set for the panel (if missing) – but we don't validate it here
             if ensure_panel_guild(panel, guild_id):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            if panel.get("guild_id") != guild_id:
-                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
+            # No guild_id check here – panel can be used in any server
 
             user_data = users.get(uid, {})
             if not isinstance(user_data, dict):
@@ -408,8 +413,21 @@ class PanelView(discord.ui.View):
             if not panel or "script_id" not in panel or not panel["script_id"]:
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
-            # ========== NEW: Loadstring uses pastes.dev ==========
-            script_url = f"https://api.pastes.dev/{panel['script_id']}"
+            script_id = panel["script_id"]
+            # Try to load from pastes.dev first, fallback to internal storage
+            script_url = f"https://api.pastes.dev/{script_id}"
+            # We'll just use the pastes.dev URL – if the script is stored internally, we serve via Flask route.
+            # But we don't know which storage is used. We'll store a flag or try both.
+            # For simplicity, we'll always use pastes.dev URL.
+            # However, if the script was stored internally (fallback), we need to use our own route.
+            # So we'll check if the script exists in MongoDB; if yes, use internal route.
+            scripts = load_json(SCRIPTS_FILE)
+            if script_id in scripts:
+                # Use internal route
+                script_url = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
+            else:
+                # Use pastes.dev
+                script_url = f"https://api.pastes.dev/{script_id}"
 
             loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
 
@@ -450,8 +468,7 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            if panel.get("guild_id") != guild_id:
-                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
+            # No guild_id check here
 
             user_data = users.get(uid, {})
             if not isinstance(user_data, dict):
@@ -533,8 +550,7 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            if panel.get("guild_id") != guild_id:
-                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
+            # No guild_id check here
 
             user_data = users.get(uid, {})
             if not isinstance(user_data, dict):
@@ -792,23 +808,32 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
 
         obfuscated_code = obfuscate_script(lua_code, panel_key)
 
-        # ========== UPLOAD TO PASTES.DEV ==========
+        # Try to upload to pastes.dev first
         paste_id = upload_to_pastes(obfuscated_code)
-        if not paste_id:
-            return await interaction.followup.send("❌ Failed to upload script to pastes.dev. Please try again later.", ephemeral=True)
-
-        # Update panel with the paste ID
-        panel["script_id"] = paste_id
-        panels[panel_key] = panel
-        save_json(PANEL_FILE, panels)
-
-        direct_link = f"https://api.pastes.dev/{paste_id}"
+        if paste_id:
+            script_id = paste_id
+            storage = "pastes.dev"
+            panel["script_id"] = script_id
+            panels[panel_key] = panel
+            save_json(PANEL_FILE, panels)
+            direct_link = f"https://api.pastes.dev/{paste_id}"
+        else:
+            # Fallback: store in MongoDB
+            script_id = generate_script_id()
+            scripts = load_json(SCRIPTS_FILE)
+            scripts[script_id] = obfuscated_code
+            save_json(SCRIPTS_FILE, scripts)
+            panel["script_id"] = script_id
+            panels[panel_key] = panel
+            save_json(PANEL_FILE, panels)
+            direct_link = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
+            storage = "MongoDB (fallback)"
 
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
         embed.add_field(name="Panel", value=f"Message ID: {message_id}", inline=False)
-        embed.add_field(name="Script ID", value=f"`{paste_id}`", inline=False)
+        embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
-        embed.add_field(name="Storage", value="pastes.dev ✅", inline=False)
+        embed.add_field(name="Storage", value=storage, inline=False)
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
@@ -816,8 +841,14 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         traceback.print_exc()
         await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
 
-# ========== FLASK SERVER (still needed for /checkkey) ==========
 app = Flask(__name__)
+
+@app.route("/raw/<script_id>")
+def get_raw_script(script_id):
+    scripts = load_json(SCRIPTS_FILE)
+    if script_id in scripts:
+        return Response(scripts[script_id], mimetype="text/plain")
+    return "Script Not Found", 404
 
 @app.route("/checkkey")
 def check_key():
