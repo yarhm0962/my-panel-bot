@@ -93,20 +93,17 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
-# ================== FIXED OBFUSCATION ==================
 def obfuscate_script(lua_code):
     encoded = base64.b64encode(lua_code.encode()).decode()
 
     wrapper = f'''
-local _ENV = _G
-local getgenv = getgenv or function() return _ENV end
-local env = getgenv()
-env.SCRIPT_KEY = env.SCRIPT_KEY or nil
-if not env.SCRIPT_KEY or env.SCRIPT_KEY == "" then
-    game:GetService("Players").LocalPlayer:Kick('Pls Put Your getgenv().SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
+-- ========== KEY CHECK (USES _G DIRECTLY) ==========
+local key = _G.SCRIPT_KEY
+if not key or key == "" then
+    game:GetService("Players").LocalPlayer:Kick('Pls Put Your _G.SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
     return
 end
-local key = env.SCRIPT_KEY
+-- ================================================
 
 -- ========== RELIABLE BASE64 DECODER ==========
 local function b64decode(data)
@@ -116,7 +113,6 @@ local function b64decode(data)
     for i = 1, #data, 4 do
         local chunk = data:sub(i, i+3)
         local a, c, d, e = chunk:byte(1, 4)
-        -- Find index in base64 table, default to 0 for '='
         local x = (a and a ~= 61) and (b:find(string.char(a), 1, true) - 1) or 0
         local y = (c and c ~= 61) and (b:find(string.char(c), 1, true) - 1) or 0
         local z = (d and d ~= 61) and (b:find(string.char(d), 1, true) - 1) or 0
@@ -130,7 +126,7 @@ local function b64decode(data)
     end
     return table.concat(result)
 end
--- ==================================================
+-- ================================================
 
 local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key
 local success, response = pcall(function()
@@ -158,7 +154,6 @@ fn()
 '''
     return wrapper
 
-# ================== REST OF THE BOT ==================
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
         label="Key to Redeem",
@@ -225,7 +220,7 @@ class PanelView(discord.ui.View):
             user_key = users[uid]["key"]
             script_url = f"https://{WEBSITE_DOMAIN}/{panel['script_id']}"
 
-            loadstring_code = f'getgenv().SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
+            loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
 
             embed = discord.Embed(title="📜 Your Script", color=discord.Color.green())
             embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
@@ -296,7 +291,7 @@ async def on_ready():
     print(f"Bot Online: {client.user}")
     client.add_view(PanelView())
 
-@client.tree.command(name="create-panel", description="Create control panel")
+@client.tree.command(name="create_panel", description="Create control panel")
 @app_commands.describe(script_title="Embed title", description="Embed description (optional)")
 async def create_panel(interaction: discord.Interaction, script_title: str, description: str = None):
     try:
@@ -345,7 +340,7 @@ async def genkey(interaction: discord.Interaction, days: int):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="view-all-keys", description="View all keys (Admin only)")
+@client.tree.command(name="view_all_keys", description="View all keys (Admin only)")
 async def view_all_keys(interaction: discord.Interaction):
     try:
         if not interaction.user.guild_permissions.administrator:
@@ -390,7 +385,7 @@ async def view_all_keys(interaction: discord.Interaction):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="delete-keys", description="Delete one or more keys (Admin only)")
+@client.tree.command(name="delete_keys", description="Delete one or more keys (Admin only)")
 @app_commands.describe(key="Specific key to delete", user="Delete all keys for this user")
 async def delete_keys(interaction: discord.Interaction, key: str = None, user: discord.User = None):
     try:
@@ -427,16 +422,23 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="add-script", description="Add Lua script file (Admin only)")
-@app_commands.describe(file="Upload .lua or .txt file")
-async def add_script(interaction: discord.Interaction, file: discord.Attachment):
+@client.tree.command(name="add_script", description="Add Lua script file (Admin only)")
+@app_commands.describe(file="Upload .lua or .txt file", new_script="Set to True to replace existing script (optional)")
+async def add_script(interaction: discord.Interaction, file: discord.Attachment, new_script: bool = False):
     try:
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("No permission.", ephemeral=True)
 
         panel = load_json(PANEL_FILE)
         if not panel or "channel_id" not in panel:
-            return await interaction.response.send_message("⚠️ No panel found. Create one first with `/create-panel`.", ephemeral=True)
+            return await interaction.response.send_message("⚠️ No panel found. Create one first with `/create_panel`.", ephemeral=True)
+
+        # Check if a script already exists
+        if "script_id" in panel and panel["script_id"] and not new_script:
+            return await interaction.response.send_message(
+                "⚠️ A script already exists in this panel. Use `new_script: True` to replace it.",
+                ephemeral=True
+            )
 
         if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
             return await interaction.response.send_message("❌ Only .lua or .txt files accepted.", ephemeral=True)
@@ -464,6 +466,7 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
         embed.add_field(name="Protection", value="Server‑validated key + Base64 encoding", inline=False)
         await interaction.followup.send(embed=embed)
+
     except Exception as e:
         print(f"add_script error: {e}")
         traceback.print_exc()
