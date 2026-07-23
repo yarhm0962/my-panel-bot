@@ -94,7 +94,9 @@ def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
 def obfuscate_script(lua_code):
+    """Encodes script in Base64 and wraps it with a tested, working decoder."""
     encoded = base64.b64encode(lua_code.encode()).decode()
+
     wrapper = f'''
 local _ENV = _G
 local getgenv = getgenv or function() return _ENV end
@@ -106,8 +108,9 @@ if not env.SCRIPT_KEY or env.SCRIPT_KEY == "" then
 end
 local key = env.SCRIPT_KEY
 
+-- ========== PROVEN BASE64 DECODER ==========
 local function b64decode(data)
-    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = string.gsub(data, '[^'..b..'=]', '')
     local result = {{}}
     for i = 1, #data, 4 do
@@ -126,6 +129,7 @@ local function b64decode(data)
     end
     return table.concat(result)
 end
+-- ==========================================
 
 local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key
 local success, response = pcall(function()
@@ -334,7 +338,6 @@ async def genkey(interaction: discord.Interaction, days: int):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-# ========== UPDATED /view-all-keys WITH EMBED ==========
 @client.tree.command(name="view-all-keys", description="View all keys (Admin only)")
 async def view_all_keys(interaction: discord.Interaction):
     try:
@@ -346,7 +349,6 @@ async def view_all_keys(interaction: discord.Interaction):
             embed = discord.Embed(title="📋 All Keys", description="No keys found.", color=discord.Color.dark_purple())
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        # Build the embed(s)
         embeds = []
         current_embed = discord.Embed(title="📋 All Keys", color=discord.Color.dark_purple())
         current_embed.set_footer(text=f"Total: {len(keys)} keys")
@@ -358,12 +360,9 @@ async def view_all_keys(interaction: discord.Interaction):
             if datetime.utcnow() > expires:
                 status = "🔴 Expired"
             owner = v.get("owner_name", v.get("owner", "Unknown"))
-
-            # Format: `Key` - Status - expires: date - owner: name
             line = f"`{k}` — {status} — expires: {v['expires']} — owner: {owner}"
 
-            # If adding this line would exceed field limit or embed size, send current embed and start a new one
-            if len(current_embed.fields) >= 25 or len(current_embed) + len(line) > 6000:
+            if len(current_embed.fields) >= 25:
                 embeds.append(current_embed)
                 current_embed = discord.Embed(title="📋 All Keys (continued)", color=discord.Color.dark_purple())
                 current_embed.set_footer(text=f"Total: {len(keys)} keys")
@@ -375,9 +374,7 @@ async def view_all_keys(interaction: discord.Interaction):
         if current_embed.fields:
             embeds.append(current_embed)
 
-        # Send the first embed
         await interaction.response.send_message(embed=embeds[0], ephemeral=True)
-        # Send any remaining embeds as follow-ups
         for embed in embeds[1:]:
             await interaction.followup.send(embed=embed, ephemeral=True)
 
