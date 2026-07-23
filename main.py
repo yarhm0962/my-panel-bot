@@ -12,8 +12,6 @@ import traceback
 
 TOKEN = os.getenv("TOKEN")
 WEBSITE_DOMAIN = os.getenv("WEBSITE_DOMAIN", "my-panel-bot.onrender.com")
-
-# Remove any http:// or https:// prefix
 WEBSITE_DOMAIN = WEBSITE_DOMAIN.replace("http://", "").replace("https://", "")
 
 if not TOKEN:
@@ -70,15 +68,16 @@ def generate_script_id():
 
 def obfuscate_script(lua_code):
     encoded = base64.b64encode(lua_code.encode()).decode()
-
     wrapper = f'''
-getgenv().SCRIPT_KEY = getgenv().SCRIPT_KEY or nil
-if not getgenv().SCRIPT_KEY or getgenv().SCRIPT_KEY == "" then
+local _ENV = _G
+local getgenv = getgenv or function() return _ENV end
+local env = getgenv()
+env.SCRIPT_KEY = env.SCRIPT_KEY or nil
+if not env.SCRIPT_KEY or env.SCRIPT_KEY == "" then
     game:GetService("Players").LocalPlayer:Kick('Pls Put Your getgenv().SCRIPT_KEY = "<KEY HERE>" to execute this script or contact the owner')
     return
 end
-
-local key = getgenv().SCRIPT_KEY
+local key = env.SCRIPT_KEY
 
 local function b64decode(data)
     local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
@@ -87,10 +86,10 @@ local function b64decode(data)
     for i = 1, #data, 4 do
         local chunk = data:sub(i, i+3)
         local a, c, d, e = chunk:byte(1, 4)
-        local x = b:find(string.char(a)) - 1 if a else 0
-        local y = b:find(string.char(c)) - 1 if c else 0
-        local z = b:find(string.char(d)) - 1 if d else 0
-        local w = b:find(string.char(e)) - 1 if e else 0
+        local x = (b:find(string.char(a)) or 2) - 1
+        local y = (b:find(string.char(c)) or 2) - 1
+        local z = (b:find(string.char(d)) or 2) - 1
+        local w = (b:find(string.char(e)) or 2) - 1
         local n1 = (x * 4) + math.floor(y / 16)
         local n2 = ((y % 16) * 16) + math.floor(z / 4)
         local n3 = ((z % 4) * 64) + w
