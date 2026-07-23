@@ -11,6 +11,7 @@ import threading
 import sys
 import traceback
 import pymongo
+import time
 
 TOKEN = os.getenv("TOKEN")
 WEBSITE_DOMAIN = os.getenv("WEBSITE_DOMAIN", "my-panel-bot.onrender.com")
@@ -26,7 +27,7 @@ db = mongo_client.get_database("bot_data")
 keys_col = db["keys"]
 users_col = db["users"]
 panel_col = db["panel"]
-scripts_col = db["scripts"]  # fallback storage
+scripts_col = db["scripts"]
 
 def load_json(filename):
     if filename == "keys":
@@ -177,21 +178,30 @@ end
     return wrapper
 
 def upload_to_pastes(lua_code):
-    try:
-        headers = {
-            "User-Agent": "M1rage-Bot/1.0",
-            "Content-Type": "text/lua"
-        }
-        response = requests.post("https://api.pastes.dev/post", data=lua_code, headers=headers, timeout=30)
-        if response.status_code == 200:
-            paste_id = response.text.strip()
-            if paste_id:
-                return paste_id
-        print(f"pastes.dev upload failed: {response.status_code} - {response.text}")
-        return None
-    except Exception as e:
-        print(f"pastes.dev upload error: {e}")
-        return None
+    """Upload to pastes.dev with retry. Returns paste_id or None."""
+    headers = {
+        "User-Agent": "M1rage-Bot/1.0",
+        "Content-Type": "text/plain"
+    }
+    for attempt in range(2):
+        try:
+            response = requests.post(
+                "https://api.pastes.dev/post",
+                data=lua_code,
+                headers=headers,
+                timeout=10,
+                allow_redirects=True
+            )
+            if response.status_code == 200:
+                paste_id = response.text.strip()
+                if paste_id and len(paste_id) > 0 and not paste_id.startswith('<!DOCTYPE'):
+                    return paste_id
+            print(f"pastes.dev upload attempt {attempt+1} failed: {response.status_code} - {response.text[:100]}")
+        except Exception as e:
+            print(f"pastes.dev upload attempt {attempt+1} error: {e}")
+        if attempt == 0:
+            time.sleep(1)
+    return None
 
 def ensure_panel_guild(panel_data, guild_id):
     if panel_data and not panel_data.get("guild_id"):
@@ -237,7 +247,6 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if not panel:
                 return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
 
-            # Ensure guild_id is set for the panel (if missing)
             if ensure_panel_guild(panel, guild_id):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
@@ -390,12 +399,9 @@ class PanelView(discord.ui.View):
             if not panel:
                 return await interaction.response.send_message("⚠️ Panel not found.", ephemeral=True)
 
-            # Ensure guild_id is set for the panel (if missing) – but we don't validate it here
             if ensure_panel_guild(panel, guild_id):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
-
-            # No guild_id check here – panel can be used in any server
 
             user_data = users.get(uid, {})
             if not isinstance(user_data, dict):
@@ -414,19 +420,11 @@ class PanelView(discord.ui.View):
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
             script_id = panel["script_id"]
-            # Try to load from pastes.dev first, fallback to internal storage
-            script_url = f"https://api.pastes.dev/{script_id}"
-            # We'll just use the pastes.dev URL – if the script is stored internally, we serve via Flask route.
-            # But we don't know which storage is used. We'll store a flag or try both.
-            # For simplicity, we'll always use pastes.dev URL.
-            # However, if the script was stored internally (fallback), we need to use our own route.
-            # So we'll check if the script exists in MongoDB; if yes, use internal route.
+            # Determine storage: if script exists in MongoDB, use internal route; else use pastes.dev
             scripts = load_json(SCRIPTS_FILE)
             if script_id in scripts:
-                # Use internal route
                 script_url = f"https://{WEBSITE_DOMAIN}/raw/{script_id}"
             else:
-                # Use pastes.dev
                 script_url = f"https://api.pastes.dev/{script_id}"
 
             loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
@@ -467,8 +465,6 @@ class PanelView(discord.ui.View):
             if ensure_panel_guild(panel, guild_id):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
-
-            # No guild_id check here
 
             user_data = users.get(uid, {})
             if not isinstance(user_data, dict):
@@ -549,8 +545,6 @@ class PanelView(discord.ui.View):
             if ensure_panel_guild(panel, guild_id):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
-
-            # No guild_id check here
 
             user_data = users.get(uid, {})
             if not isinstance(user_data, dict):
@@ -808,7 +802,7 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
 
         obfuscated_code = obfuscate_script(lua_code, panel_key)
 
-        # Try to upload to pastes.dev first
+        # Try to upload to pastes.dev
         paste_id = upload_to_pastes(obfuscated_code)
         if paste_id:
             script_id = paste_id
@@ -834,6 +828,8 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
         embed.add_field(name="Storage", value=storage, inline=False)
+        if storage == "MongoDB (fallback)":
+            embed.add_field(name="Note", value="pastes.dev was unavailable. Script is stored on your bot's server.", inline=False)
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
