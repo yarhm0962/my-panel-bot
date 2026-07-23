@@ -173,6 +173,21 @@ def ensure_panel_guild(panel_data, guild_id):
         return True
     return False
 
+def find_panel(panels, lookup_id):
+    """Find panel by channel_id, message_id, or _id. Returns (panel_id, panel_data) or (None, None)."""
+    # Try as channel_id
+    if lookup_id in panels:
+        return lookup_id, panels[lookup_id]
+    # Try as message_id
+    for pid, pdata in panels.items():
+        if pdata.get("message_id") == lookup_id:
+            return pid, pdata
+    # Try as _id (string)
+    for pid, pdata in panels.items():
+        if str(pid) == lookup_id:
+            return pid, pdata
+    return None, None
+
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
         label="Key to Redeem",
@@ -192,6 +207,7 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             panels = load_json(PANEL_FILE)
             panel = None
             panel_id = None
+            # Find panel by message_id or channel_id
             for pid, pdata in panels.items():
                 if pdata.get("message_id") == str(interaction.message.id) or pdata.get("channel_id") == str(interaction.channel_id):
                     panel = pdata
@@ -200,10 +216,12 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if not panel:
                 return await interaction.response.send_message("❌ Panel not found.", ephemeral=True)
 
-            # Migrate panel guild_id if missing
             if ensure_panel_guild(panel, guild_id):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
+
+            if panel.get("guild_id") != guild_id:
+                return await interaction.response.send_message("❌ This panel belongs to another server.", ephemeral=True)
 
             key_data = keys.get(key)
             if not key_data or not key_data.get("active"):
@@ -349,7 +367,6 @@ class PanelView(discord.ui.View):
             if not panel:
                 return await interaction.response.send_message("⚠️ Panel not found.", ephemeral=True)
 
-            # Migrate if needed
             if ensure_panel_guild(panel, guild_id):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
@@ -587,23 +604,10 @@ async def genkey(interaction: discord.Interaction, panel: str, days: int):
             return await interaction.response.send_message("No permission.", ephemeral=True)
 
         panels = load_json(PANEL_FILE)
-        panel_id = None
-        panel_data = None
-
-        # Try by channel_id
-        if panel in panels:
-            panel_id = panel
-            panel_data = panels[panel]
-        else:
-            # Try by message_id
-            for pid, pdata in panels.items():
-                if pdata.get("message_id") == panel:
-                    panel_id = pid
-                    panel_data = pdata
-                    break
+        panel_id, panel_data = find_panel(panels, panel)
 
         if not panel_data:
-            return await interaction.response.send_message(f"❌ Panel not found. Use the channel ID or message ID of the panel.", ephemeral=True)
+            return await interaction.response.send_message(f"❌ Panel not found. Use the channel ID or message ID of the panel.\nHint: Right-click the panel message and copy the ID, or copy the channel ID.", ephemeral=True)
 
         guild_id = str(interaction.guild.id)
         if ensure_panel_guild(panel_data, guild_id):
@@ -733,24 +737,18 @@ async def add_script(interaction: discord.Interaction, file: discord.Attachment,
         guild_id = str(interaction.guild.id)
 
         if message_id:
-            for pid, pdata in panels.items():
-                if pdata.get("message_id") == message_id:
-                    panel = pdata
-                    panel_key = pid
-                    break
+            panel_key, panel = find_panel(panels, message_id)
 
         if not panel:
             channel_id = str(interaction.channel_id)
-            if channel_id in panels:
-                panel = panels[channel_id]
-                panel_key = channel_id
-            else:
-                return await interaction.response.send_message(
-                    f"❌ No panel found in this channel. Create one with `/create_panel`, or provide a valid `message-id`.",
-                    ephemeral=True
-                )
+            panel_key, panel = find_panel(panels, channel_id)
 
-        # Migrate if missing guild_id
+        if not panel:
+            return await interaction.response.send_message(
+                f"❌ No panel found in this channel. Create one with `/create_panel`, or provide a valid `message-id`.\nHint: Right-click the panel message and copy the ID, or use the channel ID.",
+                ephemeral=True
+            )
+
         if ensure_panel_guild(panel, guild_id):
             panels[panel_key] = panel
             save_json(PANEL_FILE, panels)
