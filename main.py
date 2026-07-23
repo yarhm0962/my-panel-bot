@@ -45,18 +45,13 @@ def load_json(filename):
             result[doc['_id']] = doc
         else:
             if filename == "users":
-                # Migrate old user data if needed
                 value = doc['value']
                 if isinstance(value, str):
-                    # Old single‑key format – convert to new panel structure
-                    # We can't know which panel, so we create empty panels dict.
                     value = {"panels": {}}
                 elif isinstance(value, dict):
-                    # Ensure 'panels' key exists
                     if "panels" not in value:
                         value["panels"] = {}
                 else:
-                    # Fallback
                     value = {"panels": {}}
                 result[doc['key']] = value
             else:
@@ -117,7 +112,7 @@ def generate_user_key():
 def generate_script_id():
     return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
 
-def obfuscate_script(lua_code):
+def obfuscate_script(lua_code, panel_id):
     encoded = base64.b64encode(lua_code.encode()).decode()
     wrapper = f'''
 local key = _G.SCRIPT_KEY or getgenv().SCRIPT_KEY
@@ -147,7 +142,7 @@ local function b64decode(data)
     return table.concat(result)
 end
 
-local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key .. "&panel=" .. _G.PANEL_ID
+local url = "https://{WEBSITE_DOMAIN}/checkkey?key=" .. key .. "&panel={panel_id}"
 local success, response = pcall(function()
     return game:GetService("HttpService"):JSONDecode(game:HttpGet(url))
 end)
@@ -177,6 +172,7 @@ end
 '''
     wrapper = wrapper.replace("{WEBSITE_DOMAIN}", WEBSITE_DOMAIN)
     wrapper = wrapper.replace("{encoded}", encoded)
+    wrapper = wrapper.replace("{panel_id}", panel_id)
     return wrapper
 
 def ensure_panel_guild(panel_data, guild_id):
@@ -241,7 +237,6 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if datetime.now(timezone.utc) > expires:
                 return await interaction.response.send_message("❌ This key has expired.", ephemeral=True)
 
-            # Ensure user_data has correct structure
             user_data = users.get(uid)
             if user_data is None or not isinstance(user_data, dict):
                 user_data = {"panels": {}}
@@ -404,11 +399,11 @@ class PanelView(discord.ui.View):
 
             script_url = f"https://{WEBSITE_DOMAIN}/{panel['script_id']}"
 
-            loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n_G.PANEL_ID = "{panel_id}"\n\nloadstring(game:HttpGet("{script_url}"))()'
+            loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
 
             embed = discord.Embed(title="📜 Your Script", color=discord.Color.green())
             embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
-            embed.set_footer(text="SCRIPT_KEY and PANEL_ID are REQUIRED — script will NOT work without them!")
+            embed.set_footer(text="SCRIPT_KEY is REQUIRED — script will NOT work without it!")
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             print(f"get_script_btn error: {e}")
@@ -663,13 +658,23 @@ async def view_all_keys(interaction: discord.Interaction):
 
         guild_id = str(interaction.guild.id)
         keys = load_json(KEYS_FILE)
-        guild_keys = {k: v for k, v in keys.items() if v.get("guild_id") == guild_id}
+        panels = load_json(PANEL_FILE)
+
+        # Build a set of panel IDs that exist in this guild (active panels)
+        active_panel_ids = {pid for pid, pdata in panels.items() if pdata.get("guild_id") == guild_id}
+
+        # Filter keys: must belong to this guild and have a panel_id that exists in active panels
+        guild_keys = {}
+        for k, v in keys.items():
+            if v.get("guild_id") == guild_id and v.get("panel_id") in active_panel_ids:
+                guild_keys[k] = v
+
         if not guild_keys:
-            embed = discord.Embed(title="📋 All Keys", description="No keys found for this server.", color=discord.Color.dark_purple())
+            embed = discord.Embed(title="📋 All Keys", description="No keys found for active panels in this server.", color=discord.Color.dark_purple())
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         embeds = []
-        current_embed = discord.Embed(title="📋 All Keys (Server)", color=discord.Color.dark_purple())
+        current_embed = discord.Embed(title="📋 All Keys (Server - Active Panels Only)", color=discord.Color.dark_purple())
         current_embed.set_footer(text=f"Total: {len(guild_keys)} keys")
         field_count = 0
 
@@ -680,7 +685,9 @@ async def view_all_keys(interaction: discord.Interaction):
                 status = "🔴 Expired"
             owner = v.get("owner_name", v.get("owner", "Unknown"))
             panel_id = v.get("panel_id", "Unknown")
-            line = f"`{k}` — {status} — expires: {v['expires']} — owner: {owner} — panel: {panel_id}"
+            # Try to get panel title for more info
+            panel_title = panels.get(panel_id, {}).get("title", "Unknown Panel")
+            line = f"`{k}` — {status} — expires: {v['expires']} — owner: {owner} — panel: {panel_title}"
 
             if len(current_embed.fields) >= 25:
                 embeds.append(current_embed)
@@ -774,7 +781,7 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         content = await file.read()
         lua_code = content.decode("utf-8")
 
-        obfuscated_code = obfuscate_script(lua_code)
+        obfuscated_code = obfuscate_script(lua_code, panel_key)
 
         script_id = panel.get("script_id")
         if not script_id:
