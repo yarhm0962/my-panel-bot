@@ -233,12 +233,17 @@ class PanelView(discord.ui.View):
     async def get_script_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             users = load_json(USERS_FILE)
+            keys = load_json(KEYS_FILE)
             uid = str(interaction.user.id)
             user_data = users.get(uid)
-            if not user_data or not user_data.get("keys") or len(user_data["keys"]) == 0:
+            if not user_data or not user_data.get("keys"):
                 return await interaction.response.send_message("❌ You have no redeemed keys. Redeem one first using the button above.", ephemeral=True)
 
-            user_key = user_data["keys"][-1]
+            active_keys = [k for k in user_data["keys"] if k in keys and keys[k]["active"]]
+            if not active_keys:
+                return await interaction.response.send_message("❌ All your redeemed keys are invalid or expired. Please redeem a new key.", ephemeral=True)
+
+            user_key = active_keys[-1]
 
             panels = load_json(PANEL_FILE)
             panel = None
@@ -270,15 +275,41 @@ class PanelView(discord.ui.View):
     async def role_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             users = load_json(USERS_FILE)
+            keys = load_json(KEYS_FILE)
             uid = str(interaction.user.id)
-            if uid not in users or not users[uid].get("keys"):
+            user_data = users.get(uid)
+            if not user_data or not user_data.get("keys"):
                 return await interaction.response.send_message("❌ You must redeem a key first.", ephemeral=True)
-            role = discord.utils.get(interaction.guild.roles, name="Verified User")
-            if role:
-                await interaction.user.add_roles(role)
-                await interaction.response.send_message("✅ Role assigned successfully!", ephemeral=True)
-            else:
-                await interaction.response.send_message("⚠️ Role 'Verified User' not found.", ephemeral=True)
+
+            active_keys = [k for k in user_data["keys"] if k in keys and keys[k]["active"]]
+            if not active_keys:
+                return await interaction.response.send_message("❌ Your keys are invalid or expired. Please redeem a valid key.", ephemeral=True)
+
+            panels = load_json(PANEL_FILE)
+            panel = None
+            if self.message_id:
+                for p in panels.values():
+                    if p.get("message_id") == self.message_id:
+                        panel = p
+                        break
+            if not panel:
+                panel = panels.get(self.channel_id)
+
+            if not panel or "role_id" not in panel:
+                return await interaction.response.send_message("⚠️ No role has been configured for this panel. Contact an admin.", ephemeral=True)
+
+            role = interaction.guild.get_role(int(panel["role_id"]))
+            if not role:
+                return await interaction.response.send_message("⚠️ The configured role no longer exists. Contact an admin.", ephemeral=True)
+
+            # Check if user already has the role
+            if role in interaction.user.roles:
+                return await interaction.response.send_message("✅ You already have this role.", ephemeral=True)
+
+            await interaction.user.add_roles(role)
+            embed = discord.Embed(title="✅ Role Assigned!", color=discord.Color.green())
+            embed.add_field(name="Role", value=role.mention, inline=False)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             print(f"role_btn error: {e}")
             traceback.print_exc()
@@ -301,16 +332,21 @@ class PanelView(discord.ui.View):
     async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             users = load_json(USERS_FILE)
+            keys = load_json(KEYS_FILE)
             uid = str(interaction.user.id)
             user_data = users.get(uid)
             if not user_data or not user_data.get("keys"):
                 return await interaction.response.send_message("❌ You have no redeemed keys.", ephemeral=True)
-            keys = user_data["keys"]
-            last_key = keys[-1]
-            total = len(keys)
+            active_keys = [k for k in user_data["keys"] if k in keys and keys[k]["active"]]
+            if not active_keys:
+                return await interaction.response.send_message("❌ All your keys are invalid or expired.", ephemeral=True)
+            last_key = active_keys[-1]
+            total_active = len(active_keys)
+            total_redeemed = len(user_data["keys"])
             embed = discord.Embed(title="📊 Your Stats", color=discord.Color.dark_purple())
-            embed.add_field(name="Last Redeemed Key", value=f"`{last_key}`", inline=False)
-            embed.add_field(name="Total Keys Redeemed", value=str(total), inline=True)
+            embed.add_field(name="Last Active Key", value=f"`{last_key}`", inline=False)
+            embed.add_field(name="Active Keys", value=str(total_active), inline=True)
+            embed.add_field(name="Total Redeemed (including expired)", value=str(total_redeemed), inline=True)
             embed.set_footer(text="M1rage Control Panel")
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
@@ -321,11 +357,17 @@ class PanelView(discord.ui.View):
 @client.event
 async def on_ready():
     print(f"Bot Online: {client.user}")
+    panels = load_json(PANEL_FILE)
+    for channel_id, panel_data in panels.items():
+        message_id = panel_data.get("message_id")
+        if message_id:
+            view = PanelView(channel_id, message_id)
+            client.add_view(view)
 
 @client.tree.command(name="create_panel", description="Create control panel")
-@app_commands.describe(script_title="Embed title", description="Embed description (optional)")
+@app_commands.describe(script_title="Embed title", role="Role to assign when user clicks 'Get Role'", description="Embed description (optional)")
 @app_commands.rename(script_title="script-title")
-async def create_panel(interaction: discord.Interaction, script_title: str, description: str = None):
+async def create_panel(interaction: discord.Interaction, script_title: str, role: discord.Role, description: str = None):
     try:
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("No permission.", ephemeral=True)
@@ -348,6 +390,7 @@ async def create_panel(interaction: discord.Interaction, script_title: str, desc
             "description": description,
             "channel_id": channel_id,
             "message_id": message_id,
+            "role_id": str(role.id),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "creator": interaction.user.display_name,
             "script_id": None
