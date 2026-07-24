@@ -37,6 +37,35 @@ def load_json(filename):
         col = users_col
     elif filename == "panel":
         col = panel_col
+        docs = list(col.find({}))
+        result = {}
+        old_format = False
+        old_panel = {}
+        for doc in docs:
+            if '_id' in doc and 'title' in doc:
+                panel_id = doc['_id']
+                result[panel_id] = doc
+            elif 'key' in doc and 'value' in doc:
+                old_format = True
+                old_panel[doc['key']] = doc['value']
+        if old_format and not result:
+            channel_id = old_panel.get("channel_id", "unknown")
+            new_panel = {
+                "_id": channel_id,
+                "title": old_panel.get("title", "Untitled"),
+                "description": old_panel.get("description", ""),
+                "channel_id": channel_id,
+                "message_id": old_panel.get("message_id", ""),
+                "role_id": old_panel.get("role_id", ""),
+                "guild_id": old_panel.get("guild_id", ""),
+                "created_at": old_panel.get("created_at", ""),
+                "creator": old_panel.get("creator", ""),
+                "script_id": old_panel.get("script_id", None)
+            }
+            result[channel_id] = new_panel
+            col.delete_many({})
+            col.insert_one(new_panel)
+        return result
     elif filename == "scripts":
         col = scripts_col
     else:
@@ -44,13 +73,8 @@ def load_json(filename):
     docs = list(col.find({}))
     result = {}
     for doc in docs:
-        if filename == "panel":
-            if '_id' not in doc and 'key' in doc:
-                doc['_id'] = doc['key']
-            result[doc.get('_id', doc.get('key'))] = doc
-        else:
-            if 'key' in doc and 'value' in doc:
-                result[doc['key']] = doc['value']
+        if 'key' in doc and 'value' in doc:
+            result[doc['key']] = doc['value']
     return result
 
 def save_json(filename, data):
@@ -60,18 +84,18 @@ def save_json(filename, data):
         col = users_col
     elif filename == "panel":
         col = panel_col
+        col.delete_many({})
+        for key, value in data.items():
+            value['_id'] = key
+            col.insert_one(value)
+        return
     elif filename == "scripts":
         col = scripts_col
     else:
         return
     col.delete_many({})
-    if filename == "panel":
-        for key, value in data.items():
-            value['_id'] = key
-            col.insert_one(value)
-    else:
-        for key, value in data.items():
-            col.insert_one({"key": key, "value": value})
+    for key, value in data.items():
+        col.insert_one({"key": key, "value": value})
 
 def load_whitelist():
     docs = list(whitelist_col.find({}))
@@ -1120,8 +1144,6 @@ async def view_all_keys(interaction: discord.Interaction):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-# ---------------- MODIFIED / NEW COMMANDS START ----------------
-
 @client.tree.command(name="delete_key", description="Delete a specific key (Admin only)")
 @app_commands.describe(key="The key to delete")
 async def delete_key(interaction: discord.Interaction, key: str):
@@ -1140,7 +1162,6 @@ async def delete_key(interaction: discord.Interaction, key: str):
             await interaction.response.send_message(f"Key `{key}` not found.", ephemeral=True)
             return
 
-        # Check if key belongs to this guild (allow guild_id None as legacy)
         key_guild = keys[key].get("guild_id")
         if key_guild not in (guild_id, None):
             await interaction.response.send_message("❌ That key does not belong to this server.", ephemeral=True)
@@ -1195,8 +1216,6 @@ async def delete_user_keys(interaction: discord.Interaction, user: discord.User)
         print(f"delete_user_keys error: {e}")
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
-
-# ---------------- MODIFIED / NEW COMMANDS END ----------------
 
 @client.tree.command(name="reset_hwid", description="Reset HWID for a specific key (Admin only)")
 @app_commands.describe(key="The key to reset HWID for")
