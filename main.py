@@ -28,6 +28,7 @@ users_col = db["users"]
 panel_col = db["panel"]
 scripts_col = db["scripts"]
 whitelist_col = db["whitelist"]
+obf_limit_col = db["obfuscation_limits"]
 
 def load_json(filename):
     if filename == "keys":
@@ -43,9 +44,7 @@ def load_json(filename):
     docs = list(col.find({}))
     result = {}
     for doc in docs:
-        # For panel, use _id as key (which is channel_id for old panels)
         if filename == "panel":
-            # Ensure _id is set (old panels might not have it)
             if '_id' not in doc and 'key' in doc:
                 doc['_id'] = doc['key']
             result[doc.get('_id', doc.get('key'))] = doc
@@ -115,6 +114,40 @@ def format_days(days):
     if remaining == 0:
         return f"{years} years"
     return f"{years} years, {remaining} days"
+
+# ---------- Obfuscation Limit ----------
+def check_obfuscation_limit(guild_id):
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=7)
+    obf_limit_col.delete_many({"guild_id": guild_id, "timestamp": {"$lt": cutoff}})
+    count = obf_limit_col.count_documents({"guild_id": guild_id})
+    oldest = obf_limit_col.find_one({"guild_id": guild_id}, sort=[("timestamp", 1)])
+    reset_time = None
+    if oldest:
+        reset_time = oldest["timestamp"] + timedelta(days=7)
+    return count, reset_time
+
+def increment_obfuscation_count(guild_id):
+    obf_limit_col.insert_one({"guild_id": guild_id, "timestamp": datetime.now(timezone.utc)})
+
+def format_time_left(dt):
+    now = datetime.now(timezone.utc)
+    if dt <= now:
+        return "now"
+    diff = dt - now
+    days = diff.days
+    hours = diff.seconds // 3600
+    minutes = (diff.seconds % 3600) // 60
+    parts = []
+    if days > 0:
+        parts.append(f"{days} day{'s' if days > 1 else ''}")
+    if hours > 0:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    if minutes > 0:
+        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+    if not parts:
+        return "less than a minute"
+    return ", ".join(parts)
 
 KEYS_FILE = "keys"
 USERS_FILE = "users"
@@ -247,7 +280,6 @@ def ensure_panel_guild(panel_data, guild_id):
     return False
 
 def find_panel(panels, lookup_id):
-    # lookup_id can be channel_id, message_id, or panel _id
     if lookup_id in panels:
         return lookup_id, panels[lookup_id]
     for pid, pdata in panels.items():
@@ -267,14 +299,11 @@ def get_user_keys_for_panel(user_data, panel_id, keys_db):
             return panel_entry.get("keys", [])
         return []
     if "key" in user_data:
-        # old format: single key
         return [user_data["key"]] if user_data["key"] in keys_db else []
     return []
 
 def migrate_user_data(user_data, panel_id, key):
-    # Convert old user data to new panel structure
     if isinstance(user_data, str):
-        # old user_data was just a key string
         old_key = user_data
         new_data = {"panels": {panel_id: {"keys": [old_key]}}}
         if key and key != old_key:
@@ -318,14 +347,12 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             panels = load_json(PANEL_FILE)
             panel = None
             panel_id = None
-            # Find panel by message_id or channel_id from the interaction
             for pid, pdata in panels.items():
                 if pdata.get("message_id") == str(interaction.message.id) or pdata.get("channel_id") == str(interaction.channel_id):
                     panel = pdata
                     panel_id = pid
                     break
             if not panel:
-                # Fallback: try to find by channel_id (old panels)
                 for pid, pdata in panels.items():
                     if pdata.get("channel_id") == str(interaction.channel_id):
                         panel = pdata
@@ -342,7 +369,6 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if not key_data or not key_data.get("active"):
                 return await interaction.response.send_message("❌ Invalid or expired key.", ephemeral=True)
 
-            # For old keys, they may not have guild_id/panel_id – check if they match
             if key_data.get("guild_id") and key_data.get("guild_id") != guild_id:
                 return await interaction.response.send_message("❌ This key is not valid in this server.", ephemeral=True)
             if key_data.get("panel_id") and key_data.get("panel_id") != panel_id:
@@ -352,7 +378,6 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if datetime.now(timezone.utc) > expires:
                 return await interaction.response.send_message("❌ This key has expired.", ephemeral=True)
 
-            # Migrate user data if needed
             user_data = users.get(uid)
             if user_data is None:
                 user_data = {"panels": {}}
@@ -460,13 +485,43 @@ class StatsView(discord.ui.View):
         embed.set_footer(text="M1rage Control Panel")
         return embed
 
+class KeySelectView(discord.ui.View):
+    def __init__(self, user_key_list, panel_id, script_url, is_whitelisted=False):
+        super().__init__(timeout=120)
+        self.user_key_list = user_key_list  # list of (key, key_data)
+        self.panel_id = panel_id
+        self.script_url = script_url
+        self.is_whitelisted = is_whitelisted
+
+        options = []
+        for k, data in self.user_key_list:
+            label = k[:12] + "..." if len(k) > 15 else k
+            expiry = datetime.fromisoformat(data["expires"])
+            status = "🟢 Active" if data["active"] and expiry > datetime.now(timezone.utc) else "🔴 Expired"
+            options.append(discord.SelectOption(label=label, value=k, description=f"{status} - expires {expiry.strftime('%Y-%m-%d')}"))
+
+        self.select = discord.ui.Select(placeholder="Choose a key to use for the script", options=options, custom_id="key_select")
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        selected_key = interaction.data["values"][0]
+        if self.is_whitelisted:
+            loadstring_code = f'_G.WHITELISTED = true\n\nloadstring(game:HttpGet("{self.script_url}"))()'
+        else:
+            loadstring_code = f'_G.SCRIPT_KEY = "{selected_key}"\n\nloadstring(game:HttpGet("{self.script_url}"))()'
+
+        embed = discord.Embed(title="📜 Your Script", color=discord.Color.green())
+        embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
+        embed.set_footer(text=("You are whitelisted – no SCRIPT_KEY required!" if self.is_whitelisted else "SCRIPT_KEY is REQUIRED — script will NOT work without it!"))
+        await interaction.response.edit_message(embed=embed, view=None)
+
 class PanelView(discord.ui.View):
     def __init__(self, channel_id=None, message_id=None):
         super().__init__(timeout=None)
         self.channel_id = channel_id
         self.message_id = message_id
 
-    # ========== BUTTONS ==========
     @discord.ui.button(label="Redeem Key", emoji="🔑", style=discord.ButtonStyle.green, custom_id="redeem_btn")
     async def redeem_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
@@ -489,7 +544,6 @@ class PanelView(discord.ui.View):
             panel = None
             panel_id = None
 
-            # Find panel by message_id first
             if self.message_id:
                 for pid, pdata in panels.items():
                     if pdata.get("message_id") == self.message_id:
@@ -497,11 +551,9 @@ class PanelView(discord.ui.View):
                         panel_id = pid
                         break
             if not panel and self.channel_id:
-                # fallback to channel_id (old panels)
                 panel = panels.get(self.channel_id)
                 panel_id = self.channel_id
             if not panel:
-                # last resort: find by channel_id from interaction
                 channel_id = str(interaction.channel_id)
                 panel = panels.get(channel_id)
                 panel_id = channel_id
@@ -513,47 +565,6 @@ class PanelView(discord.ui.View):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
 
-            # WHITELIST CHECK
-            if is_user_whitelisted(uid, panel_id, whitelist_data):
-                if not panel or "script_id" not in panel or not panel["script_id"]:
-                    return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
-
-                script_id = panel["script_id"]
-                scripts = load_json(SCRIPTS_FILE)
-                if script_id in scripts:
-                    script_url = f"https://{WEBSITE_DOMAIN}/{script_id}"
-                else:
-                    script_url = f"https://api.pastes.dev/{script_id}"
-
-                loadstring_code = f'_G.WHITELISTED = true\n\nloadstring(game:HttpGet("{script_url}"))()'
-
-                embed = discord.Embed(title="📜 Your Script (Whitelisted)", color=discord.Color.green())
-                embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
-                embed.set_footer(text="You are whitelisted – no SCRIPT_KEY required!")
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-
-            # NORMAL USER
-            user_data = users.get(uid)
-            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
-            if not panel_keys:
-                return await interaction.response.send_message("❌ You have no redeemed keys for this panel. Redeem one using the button above, or ask an admin to whitelist you.", ephemeral=True)
-
-            # Filter active keys that belong to this panel and guild
-            active_keys = []
-            for k in panel_keys:
-                if k in keys and keys[k]["active"]:
-                    key_panel = keys[k].get("panel_id")
-                    key_guild = keys[k].get("guild_id")
-                    # If key has no panel_id/guild_id (old key), allow it (backward compatibility)
-                    if (key_panel is None or key_panel == panel_id) and (key_guild is None or key_guild == guild_id):
-                        active_keys.append(k)
-
-            if not active_keys:
-                return await interaction.response.send_message("❌ All your keys for this panel are invalid or expired. Please redeem a new key.", ephemeral=True)
-
-            user_key = active_keys[-1]  # most recent
-
             if not panel or "script_id" not in panel or not panel["script_id"]:
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
@@ -564,12 +575,48 @@ class PanelView(discord.ui.View):
             else:
                 script_url = f"https://api.pastes.dev/{script_id}"
 
-            loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
+            # Check whitelist
+            if is_user_whitelisted(uid, panel_id, whitelist_data):
+                loadstring_code = f'_G.WHITELISTED = true\n\nloadstring(game:HttpGet("{script_url}"))()'
+                embed = discord.Embed(title="📜 Your Script (Whitelisted)", color=discord.Color.green())
+                embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
+                embed.set_footer(text="You are whitelisted – no SCRIPT_KEY required!")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
 
-            embed = discord.Embed(title="📜 Your Script", color=discord.Color.green())
-            embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
-            embed.set_footer(text="SCRIPT_KEY is REQUIRED — script will NOT work without it!")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            # Normal user – get active keys
+            user_data = users.get(uid)
+            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
+            if not panel_keys:
+                return await interaction.response.send_message("❌ You have no redeemed keys for this panel. Redeem one using the button above, or ask an admin to whitelist you.", ephemeral=True)
+
+            active_keys = []
+            for k in panel_keys:
+                if k in keys and keys[k]["active"]:
+                    key_panel = keys[k].get("panel_id")
+                    key_guild = keys[k].get("guild_id")
+                    if (key_panel is None or key_panel == panel_id) and (key_guild is None or key_guild == guild_id):
+                        active_keys.append((k, keys[k]))
+
+            if not active_keys:
+                return await interaction.response.send_message("❌ All your keys for this panel are invalid or expired. Please redeem a new key.", ephemeral=True)
+
+            if len(active_keys) == 1:
+                user_key, _ = active_keys[0]
+                loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
+                embed = discord.Embed(title="📜 Your Script", color=discord.Color.green())
+                embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
+                embed.set_footer(text="SCRIPT_KEY is REQUIRED — script will NOT work without it!")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                embed = discord.Embed(
+                    title="🔑 Active User Keys",
+                    description=f"You have **{len(active_keys)}** active keys for this service.\nPlease select which key you want to use for the script:",
+                    color=discord.Color.dark_purple()
+                )
+                view = KeySelectView(active_keys, panel_id, script_url, is_whitelisted=False)
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
         except Exception as e:
             print(f"get_script_btn error: {e}")
             traceback.print_exc()
@@ -810,7 +857,6 @@ class PanelView(discord.ui.View):
 @client.event
 async def on_ready():
     print(f"Bot Online: {client.user}")
-    # Add persistent views for all panels
     panels = load_json(PANEL_FILE)
     for channel_id, panel_data in panels.items():
         message_id = panel_data.get("message_id")
@@ -818,13 +864,8 @@ async def on_ready():
             view = PanelView(channel_id, message_id)
             client.add_view(view)
         else:
-            # Old panels without message_id – use channel_id
             view = PanelView(channel_id)
             client.add_view(view)
-
-# ============================================================
-# COMMANDS
-# ============================================================
 
 @client.tree.command(name="create_panel", description="Create control panel")
 @app_commands.describe(script_title="Embed title", role="Role to assign when user clicks 'Get Role'", description="Embed description (optional)")
@@ -843,7 +884,6 @@ async def create_panel(interaction: discord.Interaction, script_title: str, role
         channel_id = str(interaction.channel_id)
         guild_id = str(interaction.guild.id)
 
-        # Send panel message
         await interaction.response.send_message(embed=embed, view=PanelView(channel_id, None))
         message = await interaction.original_response()
         message_id = str(message.id)
@@ -862,7 +902,6 @@ async def create_panel(interaction: discord.Interaction, script_title: str, role
         }
         save_json(PANEL_FILE, panels)
 
-        # Update view with message_id
         view = PanelView(channel_id, message_id)
         await message.edit(view=view)
 
@@ -934,14 +973,11 @@ async def view_all_keys(interaction: discord.Interaction):
         keys = load_json(KEYS_FILE)
         panels = load_json(PANEL_FILE)
 
-        # Filter keys that belong to this guild
         guild_keys = {}
         for k, v in keys.items():
             if v.get("guild_id") == guild_id:
                 guild_keys[k] = v
-            # If old key has no guild_id, we include it but mark it separately
             elif v.get("guild_id") is None:
-                # include but note it's legacy
                 guild_keys[k] = v
 
         if not guild_keys:
@@ -1072,7 +1108,6 @@ async def whitelist(interaction: discord.Interaction, panel: str, user: discord.
         if panel_data.get("guild_id") != guild_id:
             return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
 
-        # Generate a key for the user (if not already)
         user_key = generate_user_key()
         keys = load_json(KEYS_FILE)
         now = datetime.now(timezone.utc)
@@ -1088,7 +1123,6 @@ async def whitelist(interaction: discord.Interaction, panel: str, user: discord.
         }
         save_json(KEYS_FILE, keys)
 
-        # Auto-redeem the key for the user
         users = load_json(USERS_FILE)
         uid = str(user.id)
         user_data = users.get(uid)
@@ -1106,7 +1140,6 @@ async def whitelist(interaction: discord.Interaction, panel: str, user: discord.
         users[uid] = user_data
         save_json(USERS_FILE, users)
 
-        # Add to whitelist
         whitelist_data = load_whitelist()
         wl_key = f"{uid}_{panel_id}"
         whitelist_data[wl_key] = {
@@ -1130,7 +1163,6 @@ async def whitelist(interaction: discord.Interaction, panel: str, user: discord.
         embed.set_footer(text="The user has been DMed with the key and instructions.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        # Send DM to user
         try:
             dm_embed = discord.Embed(
                 title="✅ You've Been Whitelisted!",
@@ -1267,6 +1299,24 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("No permission.", ephemeral=True)
 
+        guild_id = str(interaction.guild.id)
+        count, reset_time = check_obfuscation_limit(guild_id)
+        if count >= 20:
+            if reset_time:
+                time_left = format_time_left(reset_time)
+                await interaction.response.send_message(
+                    f"❌ **You have reached the limit of 20 obfuscations in 7 days.**\n"
+                    f"You can obfuscate again after **{reset_time.strftime('%Y-%m-%d %H:%M UTC')}** *(in {time_left})*.\n"
+                    f"Contact the owner to buy a premium.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ You have reached the limit of 20 obfuscations in 7 days. Contact the owner to buy a premium.",
+                    ephemeral=True
+                )
+            return
+
         panels = load_json(PANEL_FILE)
         panel_key, panel = find_panel(panels, message_id)
 
@@ -1276,7 +1326,6 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
                 ephemeral=True
             )
 
-        guild_id = str(interaction.guild.id)
         if ensure_panel_guild(panel, guild_id):
             panels[panel_key] = panel
             save_json(PANEL_FILE, panels)
@@ -1308,7 +1357,9 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
 
         direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
 
-        # Create downloadable file
+        # Increment obfuscation count
+        increment_obfuscation_count(guild_id)
+
         obfuscated_file = discord.File(
             io.BytesIO(obfuscated_code.encode('utf-8')),
             filename=f"obfuscated_{script_id}.lua"
@@ -1400,7 +1451,6 @@ def check_key():
         if key not in keys or not keys[key]["active"]:
             return {"valid": False, "reason": "Invalid key"}
 
-        # For old keys without panel_id, allow if panel_id matches (if present)
         if keys[key].get("panel_id") and keys[key].get("panel_id") != panel_id:
             return {"valid": False, "reason": "Key not valid for this panel"}
 
