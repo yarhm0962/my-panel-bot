@@ -13,8 +13,7 @@ import traceback
 import pymongo
 
 TOKEN = os.getenv("TOKEN")
-WEBSITE_DOMAIN = os.getenv("WEBSITE_DOMAIN", "my-panel-bot.onrender.com")
-WEBSITE_DOMAIN = WEBSITE_DOMAIN.replace("http://", "").replace("https://", "")
+WEBSITE_DOMAIN = "api.booster.onrender.com"
 
 MONGODB_URI = os.getenv("MONGODB_URI")
 if not MONGODB_URI:
@@ -180,7 +179,8 @@ def generate_user_key():
     return "-".join(parts)
 
 def generate_script_id():
-    return ''.join(random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8))
+    chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    return ''.join(random.choice(chars) for _ in range(32))
 
 def obfuscate_script(lua_code, panel_id):
     encoded = base64.b64encode(lua_code.encode()).decode()
@@ -320,7 +320,6 @@ def get_user_keys_for_panel(user_data, panel_id, keys_db):
         return panel_entry.get("keys", [])
     return []
 
-# ======== THIS FUNCTION WAS MISSING – NOW DEFINED ========
 def is_user_whitelisted(user_id, panel_id, whitelist_data):
     key = f"{user_id}_{panel_id}"
     if key in whitelist_data:
@@ -330,7 +329,6 @@ def is_user_whitelisted(user_id, panel_id, whitelist_data):
             return False
         return True
     return False
-# ========================================================
 
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
@@ -598,7 +596,6 @@ class PanelView(discord.ui.View):
             if not panel:
                 return await interaction.response.send_message("⚠️ Panel not found.", ephemeral=True)
 
-            # Force reload from DB
             panels = load_json(PANEL_FILE)
             panel = panels.get(panel_id, {})
             if not panel:
@@ -612,7 +609,7 @@ class PanelView(discord.ui.View):
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
             script_id = panel["script_id"]
-            script_url = f"https://{WEBSITE_DOMAIN}/{script_id}"
+            script_url = f"https://{WEBSITE_DOMAIN}/api/v3/lua/download/{script_id}"
 
             if is_user_whitelisted(uid, panel_id, whitelist_data):
                 loadstring_code = f'_G.WHITELISTED = true\nloadstring(game:HttpGet("{script_url}"))()'
@@ -1440,7 +1437,7 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         panels[panel_key] = panel
         save_json(PANEL_FILE, panels)
 
-        direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
+        direct_link = f"https://{WEBSITE_DOMAIN}/api/v3/lua/download/{script_id}"
 
         increment_obfuscation_count(guild_id)
 
@@ -1472,8 +1469,8 @@ def get_raw_script(script_id):
         return Response(scripts[script_id], mimetype="text/plain")
     return "Script Not Found", 404
 
-@app.route("/<script_id>")
-def serve_script(script_id):
+@app.route('/api/v3/lua/download/<script_id>')
+def download_lua(script_id):
     user_agent = request.headers.get("User-Agent", "").lower()
     if any(x in user_agent for x in ["roblox", "luaclient", "httpclient", "http service", "game:httpget"]):
         scripts = load_json(SCRIPTS_FILE)
