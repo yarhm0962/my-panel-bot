@@ -6,7 +6,7 @@ import os
 import base64
 import io
 from datetime import datetime, timedelta, timezone
-from flask import Flask, Response, request, jsonify
+from flask import Flask, Response, request
 import threading
 import sys
 import traceback
@@ -1520,66 +1520,6 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
 
 app = Flask(__name__)
-
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
-
-@app.route('/api/upload/script', methods=['POST', 'OPTIONS'])
-def upload_script():
-    if request.method == 'OPTIONS':
-        return '', 200
-    try:
-        if 'file' not in request.files:
-            return jsonify({"error": "No file uploaded"}), 400
-        file = request.files['file']
-        panel_id = request.form.get('panel_id')
-        if not panel_id:
-            return jsonify({"error": "Missing panel_id"}), 400
-        if file.filename == '':
-            return jsonify({"error": "Empty filename"}), 400
-        ext = file.filename.split('.')[-1].lower()
-        if ext not in ['lua', 'txt']:
-            return jsonify({"error": "Only .lua or .txt files are allowed"}), 400
-
-        # Find panel by message_id
-        panels = load_json(PANEL_FILE)
-        panel_key = None
-        panel_data = None
-        for pid, pdata in panels.items():
-            if pdata.get('message_id') == panel_id:
-                panel_key = pid
-                panel_data = pdata
-                break
-        if not panel_data:
-            return jsonify({"error": "Panel not found with that message ID"}), 404
-
-        # Read and obfuscate
-        content = file.read().decode('utf-8')
-        # Use panel_key as panel_id for obfuscation (the panel ID used in validation)
-        obfuscated = obfuscate_script(content, panel_key)
-
-        # Generate new script_id
-        script_id = generate_script_id()
-
-        # Save obfuscated script
-        scripts = load_json(SCRIPTS_FILE)
-        scripts[script_id] = obfuscated
-        save_json(SCRIPTS_FILE, scripts)
-
-        # Update panel's script_id
-        panel_data["script_id"] = script_id
-        panels[panel_key] = panel_data
-        save_json(PANEL_FILE, panels)
-
-        return jsonify({"script_id": script_id})
-
-    except Exception as e:
-        print(f"Upload error: {e}")
-        return jsonify({"error": str(e)}), 500
 
 @app.route("/raw/<script_id>")
 def get_raw_script(script_id):
