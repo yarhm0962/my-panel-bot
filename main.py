@@ -320,6 +320,18 @@ def get_user_keys_for_panel(user_data, panel_id, keys_db):
         return panel_entry.get("keys", [])
     return []
 
+# ======== THIS FUNCTION WAS MISSING – NOW DEFINED ========
+def is_user_whitelisted(user_id, panel_id, whitelist_data):
+    key = f"{user_id}_{panel_id}"
+    if key in whitelist_data:
+        entry = whitelist_data[key]
+        expires = datetime.fromisoformat(entry["expires"])
+        if datetime.now(timezone.utc) > expires:
+            return False
+        return True
+    return False
+# ========================================================
+
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
         label="Key to Redeem",
@@ -586,7 +598,7 @@ class PanelView(discord.ui.View):
             if not panel:
                 return await interaction.response.send_message("⚠️ Panel not found.", ephemeral=True)
 
-            # ---- FORCE RELOAD FROM DB ----
+            # Force reload from DB
             panels = load_json(PANEL_FILE)
             panel = panels.get(panel_id, {})
             if not panel:
