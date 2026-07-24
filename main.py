@@ -954,8 +954,12 @@ async def on_ready():
 @app_commands.rename(script_title="script-title")
 async def create_panel(interaction: discord.Interaction, script_title: str, role: discord.Role, description: str = None):
     try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("No permission.", ephemeral=True)
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
 
         if not description:
             description = "This control panel is for the project: **{}**\n\nClick the buttons below to redeem your key, get the script, or get your role.".format(script_title)
@@ -996,17 +1000,23 @@ async def create_panel(interaction: discord.Interaction, script_title: str, role
 @app_commands.describe(panel="Channel ID or Message ID of the panel", days="Days active")
 async def genkey(interaction: discord.Interaction, panel: str, days: int):
     try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("No permission.", ephemeral=True)
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
 
         if days < 1:
-            return await interaction.response.send_message("❌ Days must be at least 1.", ephemeral=True)
+            await interaction.response.send_message("❌ Days must be at least 1.", ephemeral=True)
+            return
 
         panels = load_json(PANEL_FILE)
         panel_id, panel_data = find_panel(panels, panel)
 
         if not panel_data:
-            return await interaction.response.send_message(f"❌ Panel not found. Use the channel ID or message ID of the panel.\nHint: Right-click the panel message and copy the ID, or copy the channel ID.", ephemeral=True)
+            await interaction.response.send_message(f"❌ Panel not found. Use the channel ID or message ID of the panel.\nHint: Right-click the panel message and copy the ID, or copy the channel ID.", ephemeral=True)
+            return
 
         guild_id = str(interaction.guild.id)
         if ensure_panel_guild(panel_data, guild_id):
@@ -1014,7 +1024,8 @@ async def genkey(interaction: discord.Interaction, panel: str, days: int):
             save_json(PANEL_FILE, panels)
 
         if panel_data.get("guild_id") != guild_id:
-            return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+            await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+            return
 
         user_key = generate_user_key()
         keys = load_json(KEYS_FILE)
@@ -1048,8 +1059,12 @@ async def genkey(interaction: discord.Interaction, panel: str, days: int):
 @client.tree.command(name="view_all_keys", description="View all keys (Admin only) for this server")
 async def view_all_keys(interaction: discord.Interaction):
     try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("No permission.", ephemeral=True)
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
 
         guild_id = str(interaction.guild.id)
         keys = load_json(KEYS_FILE)
@@ -1064,7 +1079,8 @@ async def view_all_keys(interaction: discord.Interaction):
 
         if not guild_keys:
             embed = discord.Embed(title="📋 All Keys", description="No keys found for this server.", color=discord.Color.dark_purple())
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
 
         embeds = []
         current_embed = discord.Embed(title="📋 All Keys (Server)", color=discord.Color.dark_purple())
@@ -1107,16 +1123,22 @@ async def view_all_keys(interaction: discord.Interaction):
 @app_commands.describe(key="Specific key to delete", user="Delete all keys for this user")
 async def delete_keys(interaction: discord.Interaction, key: str = None, user: discord.User = None):
     try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("No permission.", ephemeral=True)
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
 
         if not key and not user:
-            return await interaction.response.send_message("You must specify either a key or a user.", ephemeral=True)
+            await interaction.response.send_message("You must specify either a key or a user.", ephemeral=True)
+            return
 
         guild_id = str(interaction.guild.id)
         keys = load_json(KEYS_FILE)
         if not keys:
-            return await interaction.response.send_message("No keys exist.", ephemeral=True)
+            await interaction.response.send_message("No keys exist.", ephemeral=True)
+            return
 
         deleted_count = 0
         if key:
@@ -1124,12 +1146,14 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
                 del keys[key]
                 deleted_count = 1
             else:
-                return await interaction.response.send_message(f"Key `{key}` not found in this server.", ephemeral=True)
+                await interaction.response.send_message(f"Key `{key}` not found in this server.", ephemeral=True)
+                return
         elif user:
             uid = str(user.id)
             to_delete = [k for k, v in keys.items() if v.get("owner") == uid and (v.get("guild_id") == guild_id or v.get("guild_id") is None)]
             if not to_delete:
-                return await interaction.response.send_message(f"No keys found for user {user.mention} in this server.", ephemeral=True)
+                await interaction.response.send_message(f"No keys found for user {user.mention} in this server.", ephemeral=True)
+                return
             for k in to_delete:
                 del keys[k]
             deleted_count = len(to_delete)
@@ -1145,12 +1169,17 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
 @app_commands.describe(key="The key to reset HWID for")
 async def reset_hwid(interaction: discord.Interaction, key: str):
     try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("No permission.", ephemeral=True)
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
 
         keys = load_json(KEYS_FILE)
         if key not in keys:
-            return await interaction.response.send_message(f"❌ Key `{key}` not found.", ephemeral=True)
+            await interaction.response.send_message(f"❌ Key `{key}` not found.", ephemeral=True)
+            return
 
         if "hwid" in keys[key]:
             del keys[key]["hwid"]
@@ -1170,17 +1199,23 @@ async def reset_hwid(interaction: discord.Interaction, key: str):
 @app_commands.describe(panel="Channel ID or Message ID of the panel", user="User to whitelist", expiration="Number of days until whitelist expires")
 async def whitelist(interaction: discord.Interaction, panel: str, user: discord.User, expiration: int):
     try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("No permission.", ephemeral=True)
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
 
         if expiration < 1:
-            return await interaction.response.send_message("❌ Expiration must be at least 1 day.", ephemeral=True)
+            await interaction.response.send_message("❌ Expiration must be at least 1 day.", ephemeral=True)
+            return
 
         panels = load_json(PANEL_FILE)
         panel_id, panel_data = find_panel(panels, panel)
 
         if not panel_data:
-            return await interaction.response.send_message(f"❌ Panel not found. Use the channel ID or message ID of the panel.", ephemeral=True)
+            await interaction.response.send_message(f"❌ Panel not found. Use the channel ID or message ID of the panel.", ephemeral=True)
+            return
 
         guild_id = str(interaction.guild.id)
         if ensure_panel_guild(panel_data, guild_id):
@@ -1188,7 +1223,8 @@ async def whitelist(interaction: discord.Interaction, panel: str, user: discord.
             save_json(PANEL_FILE, panels)
 
         if panel_data.get("guild_id") != guild_id:
-            return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+            await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+            return
 
         user_key = generate_user_key()
         keys = load_json(KEYS_FILE)
@@ -1287,23 +1323,30 @@ async def whitelist(interaction: discord.Interaction, panel: str, user: discord.
 @app_commands.describe(panel="Channel ID or Message ID of the panel", user="User to remove from whitelist")
 async def remove_whitelist(interaction: discord.Interaction, panel: str, user: discord.User):
     try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("No permission.", ephemeral=True)
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
 
         panels = load_json(PANEL_FILE)
         panel_id, panel_data = find_panel(panels, panel)
 
         if not panel_data:
-            return await interaction.response.send_message(f"❌ Panel not found.", ephemeral=True)
+            await interaction.response.send_message(f"❌ Panel not found.", ephemeral=True)
+            return
 
         guild_id = str(interaction.guild.id)
         if panel_data.get("guild_id") != guild_id:
-            return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+            await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+            return
 
         whitelist_data = load_whitelist()
         key = f"{str(user.id)}_{panel_id}"
         if key not in whitelist_data:
-            return await interaction.response.send_message(f"❌ User {user.mention} is not whitelisted for this panel.", ephemeral=True)
+            await interaction.response.send_message(f"❌ User {user.mention} is not whitelisted for this panel.", ephemeral=True)
+            return
 
         del whitelist_data[key]
         save_whitelist(whitelist_data)
@@ -1321,18 +1364,24 @@ async def remove_whitelist(interaction: discord.Interaction, panel: str, user: d
 @app_commands.describe(panel="Channel ID or Message ID of the panel")
 async def view_whitelist(interaction: discord.Interaction, panel: str):
     try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("No permission.", ephemeral=True)
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
 
         panels = load_json(PANEL_FILE)
         panel_id, panel_data = find_panel(panels, panel)
 
         if not panel_data:
-            return await interaction.response.send_message(f"❌ Panel not found.", ephemeral=True)
+            await interaction.response.send_message(f"❌ Panel not found.", ephemeral=True)
+            return
 
         guild_id = str(interaction.guild.id)
         if panel_data.get("guild_id") != guild_id:
-            return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+            await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+            return
 
         whitelist_data = load_whitelist()
         panel_whitelist = {}
@@ -1342,7 +1391,8 @@ async def view_whitelist(interaction: discord.Interaction, panel: str):
 
         if not panel_whitelist:
             embed = discord.Embed(title="📋 Whitelist", description="No users are whitelisted for this panel.", color=discord.Color.dark_purple())
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
 
         lines = []
         for key, value in panel_whitelist.items():
@@ -1363,7 +1413,8 @@ async def view_whitelist(interaction: discord.Interaction, panel: str):
 
         if not chunks:
             embed = discord.Embed(title="📋 Whitelist", description="No users found.", color=discord.Color.dark_purple())
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
 
         await interaction.response.send_message(f"**Whitelist for {panel_data.get('title', 'Unknown')}:**\n{chunks[0]}", ephemeral=True)
         for chunk in chunks[1:]:
@@ -1378,8 +1429,12 @@ async def view_whitelist(interaction: discord.Interaction, panel: str):
 @app_commands.rename(message_id="message-id")
 async def add_script(interaction: discord.Interaction, message_id: str, file: discord.Attachment):
     try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("No permission.", ephemeral=True)
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
 
         guild_id = str(interaction.guild.id)
         count, reset_time = check_obfuscation_limit(guild_id)
@@ -1403,20 +1458,23 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         panel_key, panel = find_panel(panels, message_id)
 
         if not panel:
-            return await interaction.response.send_message(
+            await interaction.response.send_message(
                 f"❌ No panel found with message ID `{message_id}`. Please right-click the panel message and copy the ID.",
                 ephemeral=True
             )
+            return
 
         if ensure_panel_guild(panel, guild_id):
             panels[panel_key] = panel
             save_json(PANEL_FILE, panels)
 
         if panel.get("guild_id") != guild_id:
-            return await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+            await interaction.response.send_message("❌ This panel is not in this server.", ephemeral=True)
+            return
 
         if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
-            return await interaction.response.send_message("❌ Only .lua or .txt files accepted.", ephemeral=True)
+            await interaction.response.send_message("❌ Only .lua or .txt files accepted.", ephemeral=True)
+            return
 
         await interaction.response.send_message("🔄 Obfuscating and securing script...", ephemeral=True)
 
