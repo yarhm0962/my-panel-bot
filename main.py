@@ -1447,7 +1447,7 @@ async def keyless_script(interaction: discord.Interaction, file: discord.Attachm
 
         increment_obfuscation_count(guild_id)
 
-        direct_link = f"https://{WEBSITE_DOMAIN}/keyless/{script_id}.lua"
+        direct_link = f"https://{WEBSITE_DOMAIN}/files/v3/loaders/{script_id}.lua"
         loadstring_code = f'loadstring(game:HttpGet("{direct_link}"))()'
 
         count_msg = format_obf_count_message(guild_id)
@@ -1795,6 +1795,9 @@ def download_lua(script_id):
         scripts = load_json(SCRIPTS_FILE)
         if script_id in scripts:
             return Response(scripts[script_id], mimetype="text/plain")
+        keyless = load_keyless_scripts()
+        if script_id in keyless:
+            return Response(keyless[script_id], mimetype="text/plain")
         return "Script Not Found", 404
     else:
         return '''
@@ -1837,49 +1840,7 @@ def download_lua(script_id):
 
 @app.route("/keyless/<script_id>.lua")
 def serve_keyless(script_id):
-    user_agent = request.headers.get("User-Agent", "").lower()
-    if any(x in user_agent for x in ["roblox", "luaclient", "httpclient", "http service", "game:httpget"]):
-        scripts = load_keyless_scripts()
-        if script_id in scripts:
-            return Response(scripts[script_id], mimetype="text/plain")
-        return "Script Not Found", 404
-    else:
-        return '''
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>🔓 Keyless Script</title>
-            <style>
-                * { margin:0; padding:0; box-sizing:border-box; }
-                body { background:#0a0a0f; display:flex; justify-content:center; align-items:center; min-height:100vh; font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif; margin:0; padding:20px; color:#eee; background:radial-gradient(circle at 30% 30%, #12121a, #08080c); }
-                .container { max-width:700px; text-align:center; background:rgba(20,20,30,0.7); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); padding:50px 40px; border-radius:30px; border:1px solid rgba(100,100,255,0.15); box-shadow:0 25px 60px rgba(0,0,0,0.8), 0 0 40px rgba(100,100,255,0.05); transition:all 0.3s ease; position:relative; overflow:hidden; }
-                .icon { font-size:80px; margin-bottom:20px; filter:drop-shadow(0 0 30px rgba(0,255,100,0.3)); animation:pulse 2s infinite; }
-                @keyframes pulse { 0% { transform:scale(1); } 50% { transform:scale(1.05); } 100% { transform:scale(1); } }
-                h1 { font-size:42px; font-weight:800; background:linear-gradient(135deg, #66ff66, #33cc33, #44ff44); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; letter-spacing:2px; margin-bottom:15px; }
-                .subtitle { font-size:22px; font-weight:300; color:#ccc; margin-bottom:8px; letter-spacing:1px; }
-                .desc { font-size:18px; color:#aaa; margin:20px 0 30px; line-height:1.6; border-top:1px solid rgba(255,255,255,0.05); padding-top:25px; }
-                .brand { font-size:14px; color:#555; letter-spacing:2px; text-transform:uppercase; margin-top:20px; opacity:0.7; }
-                .brand span { color:#888; font-weight:600; }
-                .glow { position:absolute; width:200px; height:200px; border-radius:50%; background:rgba(0,255,100,0.08); filter:blur(80px); top:-50px; right:-50px; pointer-events:none; }
-                .glow2 { position:absolute; width:300px; height:300px; border-radius:50%; background:rgba(0,255,100,0.06); filter:blur(100px); bottom:-100px; left:-100px; pointer-events:none; }
-                @media (max-width:500px) { .container { padding:30px 20px; } h1 { font-size:28px; } .icon { font-size:60px; } .subtitle { font-size:18px; } .desc { font-size:15px; } }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="glow"></div>
-                <div class="glow2"></div>
-                <div class="icon">🔓</div>
-                <h1>THIS IS A KEYLESS SCRIPT</h1>
-                <div class="subtitle">No Key Required</div>
-                <div class="desc">This script can be executed without any key.<br>Still protected against unauthorized access.</div>
-                <div class="brand">⚡ <span>M1rage</span> Keyless System ⚡</div>
-            </div>
-        </body>
-        </html>
-        ''', 200, {'Content-Type': 'text/html'}
+    return "This endpoint is deprecated. Use /files/v3/loaders/", 404
 
 @app.route("/checkkey")
 def check_key():
