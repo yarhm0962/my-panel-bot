@@ -29,6 +29,8 @@ panel_col = db["panel"]
 scripts_col = db["scripts"]
 whitelist_col = db["whitelist"]
 obf_limit_col = db["obfuscation_limits"]
+hwid_limit_col = db["hwid_limits"]
+hwid_reset_counts_col = db["hwid_reset_counts"]
 
 def load_json(filename):
     if filename == "keys":
@@ -109,6 +111,26 @@ def save_whitelist(data):
     whitelist_col.delete_many({})
     for key, value in data.items():
         whitelist_col.insert_one(value)
+
+def get_hwid_limit(guild_id):
+    doc = hwid_limit_col.find_one({"guild_id": str(guild_id)})
+    if doc:
+        return doc.get("limit", 10)
+    return 10  # default max
+
+def set_hwid_limit(guild_id, limit):
+    hwid_limit_col.replace_one({"guild_id": str(guild_id)}, {"guild_id": str(guild_id), "limit": limit}, upsert=True)
+
+def get_user_hwid_reset_count(guild_id, user_id):
+    doc = hwid_reset_counts_col.find_one({"guild_id": str(guild_id), "user_id": str(user_id)})
+    return doc["count"] if doc else 0
+
+def increment_user_hwid_reset_count(guild_id, user_id):
+    hwid_reset_counts_col.update_one(
+        {"guild_id": str(guild_id), "user_id": str(user_id)},
+        {"$inc": {"count": 1}},
+        upsert=True
+    )
 
 def format_days(days):
     if days == 1:
@@ -533,11 +555,7 @@ class KeySelectView(discord.ui.View):
 
     async def select_callback(self, interaction: discord.Interaction):
         selected_key = interaction.data["values"][0]
-        if self.is_whitelisted:
-            loadstring_code = f'_G.SCRIPT_KEY = "{selected_key}"\nloadstring(game:HttpGet("{self.script_url}"))()'
-        else:
-            loadstring_code = f'_G.SCRIPT_KEY = "{selected_key}"\nloadstring(game:HttpGet("{self.script_url}"))()'
-
+        loadstring_code = f'_G.SCRIPT_KEY = "{selected_key}"\nloadstring(game:HttpGet("{self.script_url}"))()'
         embed = discord.Embed(title="📜 Your Script", color=discord.Color.green())
         embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
         embed.set_footer(text="HWID will be locked on first execution.")
@@ -563,15 +581,28 @@ class ResetHWIDView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction):
         selected_key = interaction.data["values"][0]
         keys = load_json(KEYS_FILE)
+        guild_id = str(interaction.guild.id)
+        limit = get_hwid_limit(guild_id)
+        current_count = get_user_hwid_reset_count(guild_id, interaction.user.id)
+
+        if current_count >= limit:
+            await interaction.response.send_message(
+                f"❌ You have reached the HWID reset limit ({limit} times) in this server. Contact an admin.",
+                ephemeral=True
+            )
+            return
+
         if selected_key not in keys:
             await interaction.response.send_message("❌ Key not found.", ephemeral=True)
             return
         if "hwid" in keys[selected_key]:
             del keys[selected_key]["hwid"]
             save_json(KEYS_FILE, keys)
+            increment_user_hwid_reset_count(guild_id, interaction.user.id)
             embed = discord.Embed(title="✅ HWID Reset Successful!", color=discord.Color.green())
             embed.add_field(name="Key", value=f"`{selected_key}`", inline=False)
             embed.add_field(name="Status", value="HWID cleared. Next execution will store new HWID.", inline=False)
+            embed.set_footer(text=f"HWID resets used: {current_count+1}/{limit}")
             await interaction.response.edit_message(embed=embed, view=None)
         else:
             await interaction.response.send_message(f"ℹ️ Key `{selected_key}` does not have a HWID stored.", ephemeral=True)
@@ -882,14 +913,25 @@ class PanelView(discord.ui.View):
             if not active_keys:
                 return await interaction.response.send_message("❌ No active keys found to reset HWID.", ephemeral=True)
 
+            limit = get_hwid_limit(guild_id)
+            current_count = get_user_hwid_reset_count(guild_id, interaction.user.id)
+
             if len(active_keys) == 1:
                 selected_key, _ = active_keys[0]
+                if current_count >= limit:
+                    return await interaction.response.send_message(
+                        f"❌ You have reached the HWID reset limit ({limit} times) in this server. Contact an admin.",
+                        ephemeral=True
+                    )
+
                 if "hwid" in keys[selected_key]:
                     del keys[selected_key]["hwid"]
                     save_json(KEYS_FILE, keys)
+                    increment_user_hwid_reset_count(guild_id, interaction.user.id)
                     embed = discord.Embed(title="✅ HWID Reset Successful!", color=discord.Color.green())
                     embed.add_field(name="Key", value=f"`{selected_key}`", inline=False)
                     embed.add_field(name="Status", value="HWID cleared. Next execution will store new HWID.", inline=False)
+                    embed.set_footer(text=f"HWID resets used: {current_count+1}/{limit}")
                     await interaction.response.send_message(embed=embed, ephemeral=True)
                 else:
                     await interaction.response.send_message(f"ℹ️ Key `{selected_key}` does not have a HWID stored.", ephemeral=True)
@@ -996,9 +1038,9 @@ async def on_ready():
             client.add_view(view)
 
 @client.tree.command(name="create_panel", description="Create control panel")
-@app_commands.describe(script_title="Embed title", role="Role to assign when user clicks 'Get Role'", description="Embed description (optional)")
-@app_commands.rename(script_title="script-title")
-async def create_panel(interaction: discord.Interaction, script_title: str, role: discord.Role, description: str = None):
+@app_commands.describe(script_title="Embed title", set_role="Role to assign when user clicks 'Get Role'", description="Embed description (optional)")
+@app_commands.rename(script_title="script-title", set_role="set-role")
+async def create_panel(interaction: discord.Interaction, script_title: str, set_role: discord.Role, description: str = None):
     try:
         if not interaction.guild:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
@@ -1026,7 +1068,7 @@ async def create_panel(interaction: discord.Interaction, script_title: str, role
             "description": description,
             "channel_id": channel_id,
             "message_id": message_id,
-            "role_id": str(role.id),
+            "role_id": str(set_role.id),
             "guild_id": guild_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "creator": interaction.user.display_name,
@@ -1238,7 +1280,7 @@ async def delete_user_keys(interaction: discord.Interaction, user: discord.User)
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="reset_hwid", description="Reset HWID for a specific key (Admin only)")
+@client.tree.command(name="reset_hwid", description="Reset HWID for a specific key (Admin only) – bypasses limit")
 @app_commands.describe(key="The key to reset HWID for")
 async def reset_hwid(interaction: discord.Interaction, key: str):
     try:
@@ -1265,6 +1307,28 @@ async def reset_hwid(interaction: discord.Interaction, key: str):
             await interaction.response.send_message(f"ℹ️ Key `{key}` does not have a HWID stored.", ephemeral=True)
     except Exception as e:
         print(f"reset_hwid command error: {e}")
+        traceback.print_exc()
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+@client.tree.command(name="hwid_limit", description="Set maximum HWID resets per user (Admin only, 1-10)")
+@app_commands.describe(limit="Maximum resets allowed (1-10)")
+async def hwid_limit(interaction: discord.Interaction, limit: int):
+    try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
+
+        if limit < 1 or limit > 10:
+            await interaction.response.send_message("❌ Limit must be between 1 and 10.", ephemeral=True)
+            return
+
+        set_hwid_limit(interaction.guild.id, limit)
+        await interaction.response.send_message(f"✅ HWID reset limit set to **{limit}** per user in this server.", ephemeral=True)
+    except Exception as e:
+        print(f"hwid_limit error: {e}")
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
@@ -1577,11 +1641,18 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
             filename=f"obfuscated_{script_id}.lua"
         )
 
+        # Show obfuscation count
+        count_after = count + 1
+        count_msg = f"{count_after}/20"
+        if reset_time:
+            count_msg += f" (resets {reset_time.strftime('%Y-%m-%d %H:%M UTC')})"
+
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
         embed.add_field(name="Panel", value=f"Message ID: {message_id}", inline=False)
         embed.add_field(name="Script ID", value=f"`{script_id}`", inline=False)
         embed.add_field(name="Direct Link", value=f"{direct_link}", inline=False)
         embed.add_field(name="Protection", value="Key + HWID validation", inline=False)
+        embed.add_field(name="Obfuscations Used", value=count_msg, inline=False)
         embed.add_field(name="Download", value="Check the attached file for the obfuscated Lua code.", inline=False)
 
         await interaction.followup.send(embed=embed, file=obfuscated_file)
