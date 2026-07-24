@@ -115,7 +115,6 @@ def format_days(days):
         return f"{years} years"
     return f"{years} years, {remaining} days"
 
-# ---------- Obfuscation Limit ----------
 def check_obfuscation_limit(guild_id):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=7)
@@ -185,16 +184,13 @@ def generate_script_id():
 
 def obfuscate_script(lua_code, panel_id):
     encoded = base64.b64encode(lua_code.encode()).decode()
-    
     chunks = []
     i = 0
     while i < len(encoded):
         size = random.randint(3, 8)
         chunks.append(encoded[i:i+size])
         i += size
-    
     table_str = "{" + ",".join(f'"{chunk}"' for chunk in chunks) + "}"
-    
     wrapper = f'''
 return(function(...)
     local L = {table_str}
@@ -220,7 +216,6 @@ return(function(...)
         return table.concat(r)
     end
 
-    -- ======== WHITELIST BYPASS ========
     if _G.WHITELISTED == true then
         local b64 = table.concat(L)
         local decoded = b64decode(b64)
@@ -229,7 +224,6 @@ return(function(...)
         _G.WHITELISTED = nil
         return
     end
-    -- ==================================
 
     local key = _G.SCRIPT_KEY or getgenv().SCRIPT_KEY
     if not key or key == "" then
@@ -290,69 +284,41 @@ def find_panel(panels, lookup_id):
             return pid, pdata
     return None, None
 
-# ======== MIGRATION HELPER ========
-def migrate_old_user_data(user_data, panel_id, keys_db):
-    """Convert old user data (string or dict with 'key') to new panel structure."""
-    new_data = {"panels": {}}
+def safe_migrate_old_data(user_data, panel_id, new_key=None):
     if isinstance(user_data, str):
-        # old: user_data is just a key string
-        if user_data in keys_db:
-            new_data["panels"][panel_id] = {"keys": [user_data]}
+        old_keys = [user_data] if user_data else []
     elif isinstance(user_data, dict):
         if "panels" in user_data:
-            # already new format – return as-is
             return user_data
-        elif "key" in user_data:
-            old_key = user_data["key"]
-            if old_key in keys_db:
-                new_data["panels"][panel_id] = {"keys": [old_key]}
+        if "key" in user_data:
+            old_keys = [user_data["key"]] if user_data["key"] else []
         elif "keys" in user_data and isinstance(user_data["keys"], list):
-            # some old format might have "keys" directly
-            new_data["panels"][panel_id] = {"keys": user_data["keys"]}
+            old_keys = user_data["keys"]
+        else:
+            old_keys = []
+    else:
+        old_keys = []
+    new_data = {"panels": {}}
+    if old_keys:
+        new_data["panels"][panel_id] = {"keys": old_keys}
+    if new_key and new_key not in old_keys:
+        if panel_id not in new_data["panels"]:
+            new_data["panels"][panel_id] = {"keys": []}
+        if new_key not in new_data["panels"][panel_id]["keys"]:
+            new_data["panels"][panel_id]["keys"].append(new_key)
     return new_data
 
 def get_user_keys_for_panel(user_data, panel_id, keys_db):
     if not user_data:
         return []
-    # Ensure dict
     if not isinstance(user_data, dict):
-        user_data = migrate_old_user_data(user_data, panel_id, keys_db)
-    if "panels" in user_data:
-        panel_entry = user_data["panels"].get(panel_id)
-        if panel_entry and isinstance(panel_entry, dict):
-            return panel_entry.get("keys", [])
-        return []
-    # Fallback: if "key" exists directly
-    if "key" in user_data:
-        return [user_data["key"]] if user_data["key"] in keys_db else []
+        user_data = safe_migrate_old_data(user_data, panel_id)
+    elif "panels" not in user_data:
+        user_data = safe_migrate_old_data(user_data, panel_id)
+    panel_entry = user_data.get("panels", {}).get(panel_id)
+    if panel_entry and isinstance(panel_entry, dict):
+        return panel_entry.get("keys", [])
     return []
-
-def migrate_user_data(user_data, panel_id, key):
-    # used during redemption
-    if isinstance(user_data, str):
-        old_key = user_data
-        new_data = {"panels": {panel_id: {"keys": [old_key]}}}
-        if key and key != old_key:
-            new_data["panels"][panel_id]["keys"].append(key)
-        return new_data
-    elif isinstance(user_data, dict) and "key" in user_data:
-        old_key = user_data["key"]
-        new_data = {"panels": {panel_id: {"keys": [old_key]}}}
-        if key and key != old_key:
-            new_data["panels"][panel_id]["keys"].append(key)
-        return new_data
-    else:
-        return {"panels": {panel_id: {"keys": [key]}} if key else {panel_id: {"keys": []}}}
-
-def is_user_whitelisted(user_id, panel_id, whitelist_data):
-    key = f"{user_id}_{panel_id}"
-    if key in whitelist_data:
-        entry = whitelist_data[key]
-        expires = datetime.fromisoformat(entry["expires"])
-        if datetime.now(timezone.utc) > expires:
-            return False
-        return True
-    return False
 
 class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
@@ -408,16 +374,16 @@ class RedeemModal(discord.ui.Modal, title="Redeem Your Key"):
             if user_data is None:
                 user_data = {"panels": {}}
             elif not isinstance(user_data, dict):
-                user_data = migrate_user_data(user_data, panel_id, key)
+                user_data = safe_migrate_old_data(user_data, panel_id)
             elif "panels" not in user_data:
-                user_data = migrate_user_data(user_data, panel_id, key)
+                user_data = safe_migrate_old_data(user_data, panel_id)
+
+            if panel_id not in user_data["panels"]:
+                user_data["panels"][panel_id] = {"keys": []}
+            if key not in user_data["panels"][panel_id]["keys"]:
+                user_data["panels"][panel_id]["keys"].append(key)
             else:
-                if panel_id not in user_data["panels"]:
-                    user_data["panels"][panel_id] = {"keys": []}
-                if key not in user_data["panels"][panel_id]["keys"]:
-                    user_data["panels"][panel_id]["keys"].append(key)
-                else:
-                    return await interaction.response.send_message("✅ You already redeemed this key for this panel.", ephemeral=True)
+                return await interaction.response.send_message("✅ You already redeemed this key for this panel.", ephemeral=True)
 
             users[uid] = user_data
             save_json(USERS_FILE, users)
@@ -514,7 +480,7 @@ class StatsView(discord.ui.View):
 class KeySelectView(discord.ui.View):
     def __init__(self, user_key_list, panel_id, script_url, is_whitelisted=False):
         super().__init__(timeout=120)
-        self.user_key_list = user_key_list  # list of (key, key_data)
+        self.user_key_list = user_key_list
         self.panel_id = panel_id
         self.script_url = script_url
         self.is_whitelisted = is_whitelisted
@@ -533,9 +499,9 @@ class KeySelectView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction):
         selected_key = interaction.data["values"][0]
         if self.is_whitelisted:
-            loadstring_code = f'_G.WHITELISTED = true\n\nloadstring(game:HttpGet("{self.script_url}"))()'
+            loadstring_code = f'_G.WHITELISTED = true\nloadstring(game:HttpGet("{self.script_url}"))()'
         else:
-            loadstring_code = f'_G.SCRIPT_KEY = "{selected_key}"\n\nloadstring(game:HttpGet("{self.script_url}"))()'
+            loadstring_code = f'_G.SCRIPT_KEY = "{selected_key}"\nloadstring(game:HttpGet("{self.script_url}"))()'
 
         embed = discord.Embed(title="📜 Your Script", color=discord.Color.green())
         embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
@@ -545,7 +511,7 @@ class KeySelectView(discord.ui.View):
 class ResetHWIDView(discord.ui.View):
     def __init__(self, active_keys, panel_id):
         super().__init__(timeout=120)
-        self.active_keys = active_keys  # list of (key, key_data)
+        self.active_keys = active_keys
         self.panel_id = panel_id
 
         options = []
@@ -628,34 +594,28 @@ class PanelView(discord.ui.View):
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
             script_id = panel["script_id"]
-            scripts = load_json(SCRIPTS_FILE)
-            if script_id in scripts:
-                script_url = f"https://{WEBSITE_DOMAIN}/{script_id}"
-            else:
-                script_url = f"https://api.pastes.dev/{script_id}"
+            script_url = f"https://{WEBSITE_DOMAIN}/{script_id}"
 
-            # Check whitelist
             if is_user_whitelisted(uid, panel_id, whitelist_data):
-                loadstring_code = f'_G.WHITELISTED = true\n\nloadstring(game:HttpGet("{script_url}"))()'
+                loadstring_code = f'_G.WHITELISTED = true\nloadstring(game:HttpGet("{script_url}"))()'
                 embed = discord.Embed(title="📜 Your Script (Whitelisted)", color=discord.Color.green())
                 embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
                 embed.set_footer(text="You are whitelisted – no SCRIPT_KEY required!")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
-            # Normal user – get active keys
             user_data = users.get(uid)
-            # Migrate old data if needed
-            if user_data and not isinstance(user_data, dict):
-                user_data = migrate_old_user_data(user_data, panel_id, keys)
-                users[uid] = user_data
-                save_json(USERS_FILE, users)
-            elif user_data and isinstance(user_data, dict) and "key" in user_data and "panels" not in user_data:
-                user_data = migrate_old_user_data(user_data, panel_id, keys)
+            if user_data is None:
+                user_data = {"panels": {}}
+            elif not isinstance(user_data, dict):
+                user_data = safe_migrate_old_data(user_data, panel_id)
+            elif "panels" not in user_data:
+                user_data = safe_migrate_old_data(user_data, panel_id)
+            if user_data != users.get(uid):
                 users[uid] = user_data
                 save_json(USERS_FILE, users)
 
-            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
+            panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel. Redeem one using the button above, or ask an admin to whitelist you.", ephemeral=True)
 
@@ -672,7 +632,7 @@ class PanelView(discord.ui.View):
 
             if len(active_keys) == 1:
                 user_key, _ = active_keys[0]
-                loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\n\nloadstring(game:HttpGet("{script_url}"))()'
+                loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\nloadstring(game:HttpGet("{script_url}"))()'
                 embed = discord.Embed(title="📜 Your Script", color=discord.Color.green())
                 embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
                 embed.set_footer(text="SCRIPT_KEY is REQUIRED — script will NOT work without it!")
@@ -750,16 +710,17 @@ class PanelView(discord.ui.View):
                 return
 
             user_data = users.get(uid)
-            if user_data and not isinstance(user_data, dict):
-                user_data = migrate_old_user_data(user_data, panel_id, keys)
-                users[uid] = user_data
-                save_json(USERS_FILE, users)
-            elif user_data and isinstance(user_data, dict) and "key" in user_data and "panels" not in user_data:
-                user_data = migrate_old_user_data(user_data, panel_id, keys)
+            if user_data is None:
+                user_data = {"panels": {}}
+            elif not isinstance(user_data, dict):
+                user_data = safe_migrate_old_data(user_data, panel_id)
+            elif "panels" not in user_data:
+                user_data = safe_migrate_old_data(user_data, panel_id)
+            if user_data != users.get(uid):
                 users[uid] = user_data
                 save_json(USERS_FILE, users)
 
-            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
+            panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
             if not panel_keys:
                 return await interaction.response.send_message("❌ You must redeem a key for this panel first, or ask an admin to whitelist you.", ephemeral=True)
 
@@ -835,16 +796,17 @@ class PanelView(discord.ui.View):
                 save_json(PANEL_FILE, panels)
 
             user_data = users.get(uid)
-            if user_data and not isinstance(user_data, dict):
-                user_data = migrate_old_user_data(user_data, panel_id, keys)
-                users[uid] = user_data
-                save_json(USERS_FILE, users)
-            elif user_data and isinstance(user_data, dict) and "key" in user_data and "panels" not in user_data:
-                user_data = migrate_old_user_data(user_data, panel_id, keys)
+            if user_data is None:
+                user_data = {"panels": {}}
+            elif not isinstance(user_data, dict):
+                user_data = safe_migrate_old_data(user_data, panel_id)
+            elif "panels" not in user_data:
+                user_data = safe_migrate_old_data(user_data, panel_id)
+            if user_data != users.get(uid):
                 users[uid] = user_data
                 save_json(USERS_FILE, users)
 
-            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
+            panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel.", ephemeral=True)
 
@@ -860,7 +822,6 @@ class PanelView(discord.ui.View):
                 return await interaction.response.send_message("❌ No active keys found to reset HWID.", ephemeral=True)
 
             if len(active_keys) == 1:
-                # Reset directly
                 selected_key, _ = active_keys[0]
                 if "hwid" in keys[selected_key]:
                     del keys[selected_key]["hwid"]
@@ -918,16 +879,17 @@ class PanelView(discord.ui.View):
                 save_json(PANEL_FILE, panels)
 
             user_data = users.get(uid)
-            if user_data and not isinstance(user_data, dict):
-                user_data = migrate_old_user_data(user_data, panel_id, keys)
-                users[uid] = user_data
-                save_json(USERS_FILE, users)
-            elif user_data and isinstance(user_data, dict) and "key" in user_data and "panels" not in user_data:
-                user_data = migrate_old_user_data(user_data, panel_id, keys)
+            if user_data is None:
+                user_data = {"panels": {}}
+            elif not isinstance(user_data, dict):
+                user_data = safe_migrate_old_data(user_data, panel_id)
+            elif "panels" not in user_data:
+                user_data = safe_migrate_old_data(user_data, panel_id)
+            if user_data != users.get(uid):
                 users[uid] = user_data
                 save_json(USERS_FILE, users)
 
-            panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
+            panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel.", ephemeral=True)
 
@@ -1234,9 +1196,9 @@ async def whitelist(interaction: discord.Interaction, panel: str, user: discord.
         if user_data is None:
             user_data = {"panels": {}}
         elif not isinstance(user_data, dict):
-            user_data = migrate_user_data(user_data, panel_id, user_key)
+            user_data = safe_migrate_old_data(user_data, panel_id)
         elif "panels" not in user_data:
-            user_data = migrate_user_data(user_data, panel_id, user_key)
+            user_data = safe_migrate_old_data(user_data, panel_id)
         else:
             if panel_id not in user_data["panels"]:
                 user_data["panels"][panel_id] = {"keys": []}
@@ -1462,7 +1424,6 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
 
         direct_link = f"https://{WEBSITE_DOMAIN}/{script_id}"
 
-        # Increment obfuscation count
         increment_obfuscation_count(guild_id)
 
         obfuscated_file = discord.File(
@@ -1483,10 +1444,6 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         print(f"add_script error: {e}")
         traceback.print_exc()
         await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
-
-# ============================================================
-# FLASK WEB SERVER
-# ============================================================
 
 app = Flask(__name__)
 
