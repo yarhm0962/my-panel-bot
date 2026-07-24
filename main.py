@@ -259,7 +259,7 @@ return(function(...)
     local b64 = table.concat(L)
     local decoded = b64decode(b64)
 
-    local hwid = game.Players.LocalPlayer.UserId
+    local hwid = tostring(game.Players.LocalPlayer.UserId)
 
     local url = "https://{WEBSITE_DOMAIN}/validate?key=" .. key .. "&panel={panel_id}&hwid=" .. hwid
     local success, response = pcall(function()
@@ -1672,15 +1672,17 @@ def validate_hwid():
 
         stored_hwid = keys[key].get("hwid")
         if stored_hwid is None:
-            keys[key]["hwid"] = hwid
+            keys[key]["hwid"] = str(hwid)
             save_json(KEYS_FILE, keys)
+            print(f"HWID stored for key {key}: {str(hwid)}")
             return {"valid": True, "reason": "HWID stored successfully"}
-        elif stored_hwid == hwid:
+        elif str(stored_hwid) == str(hwid):
             return {"valid": True, "reason": "HWID matches"}
         else:
             return {"valid": False, "reason": "HWID mismatch – this key is locked to another device"}
     except Exception as e:
         print(f"validate_hwid error: {e}")
+        traceback.print_exc()
         return {"valid": False, "reason": "Server error"}
 
 @app.route("/")
