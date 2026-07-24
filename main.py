@@ -290,19 +290,45 @@ def find_panel(panels, lookup_id):
             return pid, pdata
     return None, None
 
+# ======== MIGRATION HELPER ========
+def migrate_old_user_data(user_data, panel_id, keys_db):
+    """Convert old user data (string or dict with 'key') to new panel structure."""
+    new_data = {"panels": {}}
+    if isinstance(user_data, str):
+        # old: user_data is just a key string
+        if user_data in keys_db:
+            new_data["panels"][panel_id] = {"keys": [user_data]}
+    elif isinstance(user_data, dict):
+        if "panels" in user_data:
+            # already new format – return as-is
+            return user_data
+        elif "key" in user_data:
+            old_key = user_data["key"]
+            if old_key in keys_db:
+                new_data["panels"][panel_id] = {"keys": [old_key]}
+        elif "keys" in user_data and isinstance(user_data["keys"], list):
+            # some old format might have "keys" directly
+            new_data["panels"][panel_id] = {"keys": user_data["keys"]}
+    return new_data
+
 def get_user_keys_for_panel(user_data, panel_id, keys_db):
-    if not user_data or not isinstance(user_data, dict):
+    if not user_data:
         return []
+    # Ensure dict
+    if not isinstance(user_data, dict):
+        user_data = migrate_old_user_data(user_data, panel_id, keys_db)
     if "panels" in user_data:
         panel_entry = user_data["panels"].get(panel_id)
         if panel_entry and isinstance(panel_entry, dict):
             return panel_entry.get("keys", [])
         return []
+    # Fallback: if "key" exists directly
     if "key" in user_data:
         return [user_data["key"]] if user_data["key"] in keys_db else []
     return []
 
 def migrate_user_data(user_data, panel_id, key):
+    # used during redemption
     if isinstance(user_data, str):
         old_key = user_data
         new_data = {"panels": {panel_id: {"keys": [old_key]}}}
@@ -516,6 +542,39 @@ class KeySelectView(discord.ui.View):
         embed.set_footer(text=("You are whitelisted – no SCRIPT_KEY required!" if self.is_whitelisted else "SCRIPT_KEY is REQUIRED — script will NOT work without it!"))
         await interaction.response.edit_message(embed=embed, view=None)
 
+class ResetHWIDView(discord.ui.View):
+    def __init__(self, active_keys, panel_id):
+        super().__init__(timeout=120)
+        self.active_keys = active_keys  # list of (key, key_data)
+        self.panel_id = panel_id
+
+        options = []
+        for k, data in self.active_keys:
+            label = k[:12] + "..." if len(k) > 15 else k
+            expiry = datetime.fromisoformat(data["expires"])
+            status = "🟢 Active" if data["active"] and expiry > datetime.now(timezone.utc) else "🔴 Expired"
+            options.append(discord.SelectOption(label=label, value=k, description=f"{status} - expires {expiry.strftime('%Y-%m-%d')}"))
+
+        self.select = discord.ui.Select(placeholder="Choose a key to reset HWID", options=options, custom_id="reset_hwid_select")
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        selected_key = interaction.data["values"][0]
+        keys = load_json(KEYS_FILE)
+        if selected_key not in keys:
+            await interaction.response.send_message("❌ Key not found.", ephemeral=True)
+            return
+        if "hwid" in keys[selected_key]:
+            del keys[selected_key]["hwid"]
+            save_json(KEYS_FILE, keys)
+            embed = discord.Embed(title="✅ HWID Reset Successful!", color=discord.Color.green())
+            embed.add_field(name="Key", value=f"`{selected_key}`", inline=False)
+            embed.add_field(name="Status", value="HWID cleared. Next execution will store new HWID.", inline=False)
+            await interaction.response.edit_message(embed=embed, view=None)
+        else:
+            await interaction.response.send_message(f"ℹ️ Key `{selected_key}` does not have a HWID stored.", ephemeral=True)
+
 class PanelView(discord.ui.View):
     def __init__(self, channel_id=None, message_id=None):
         super().__init__(timeout=None)
@@ -586,6 +645,16 @@ class PanelView(discord.ui.View):
 
             # Normal user – get active keys
             user_data = users.get(uid)
+            # Migrate old data if needed
+            if user_data and not isinstance(user_data, dict):
+                user_data = migrate_old_user_data(user_data, panel_id, keys)
+                users[uid] = user_data
+                save_json(USERS_FILE, users)
+            elif user_data and isinstance(user_data, dict) and "key" in user_data and "panels" not in user_data:
+                user_data = migrate_old_user_data(user_data, panel_id, keys)
+                users[uid] = user_data
+                save_json(USERS_FILE, users)
+
             panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel. Redeem one using the button above, or ask an admin to whitelist you.", ephemeral=True)
@@ -681,6 +750,15 @@ class PanelView(discord.ui.View):
                 return
 
             user_data = users.get(uid)
+            if user_data and not isinstance(user_data, dict):
+                user_data = migrate_old_user_data(user_data, panel_id, keys)
+                users[uid] = user_data
+                save_json(USERS_FILE, users)
+            elif user_data and isinstance(user_data, dict) and "key" in user_data and "panels" not in user_data:
+                user_data = migrate_old_user_data(user_data, panel_id, keys)
+                users[uid] = user_data
+                save_json(USERS_FILE, users)
+
             panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
                 return await interaction.response.send_message("❌ You must redeem a key for this panel first, or ask an admin to whitelist you.", ephemeral=True)
@@ -757,6 +835,15 @@ class PanelView(discord.ui.View):
                 save_json(PANEL_FILE, panels)
 
             user_data = users.get(uid)
+            if user_data and not isinstance(user_data, dict):
+                user_data = migrate_old_user_data(user_data, panel_id, keys)
+                users[uid] = user_data
+                save_json(USERS_FILE, users)
+            elif user_data and isinstance(user_data, dict) and "key" in user_data and "panels" not in user_data:
+                user_data = migrate_old_user_data(user_data, panel_id, keys)
+                users[uid] = user_data
+                save_json(USERS_FILE, users)
+
             panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel.", ephemeral=True)
@@ -767,23 +854,32 @@ class PanelView(discord.ui.View):
                     key_panel = keys[k].get("panel_id")
                     key_guild = keys[k].get("guild_id")
                     if (key_panel is None or key_panel == panel_id) and (key_guild is None or key_guild == guild_id):
-                        active_keys.append(k)
+                        active_keys.append((k, keys[k]))
 
             if not active_keys:
                 return await interaction.response.send_message("❌ No active keys found to reset HWID.", ephemeral=True)
 
-            reset_count = 0
-            for k in active_keys:
-                if "hwid" in keys[k]:
-                    del keys[k]["hwid"]
-                    reset_count += 1
-            save_json(KEYS_FILE, keys)
+            if len(active_keys) == 1:
+                # Reset directly
+                selected_key, _ = active_keys[0]
+                if "hwid" in keys[selected_key]:
+                    del keys[selected_key]["hwid"]
+                    save_json(KEYS_FILE, keys)
+                    embed = discord.Embed(title="✅ HWID Reset Successful!", color=discord.Color.green())
+                    embed.add_field(name="Key", value=f"`{selected_key}`", inline=False)
+                    embed.add_field(name="Status", value="HWID cleared. Next execution will store new HWID.", inline=False)
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                else:
+                    await interaction.response.send_message(f"ℹ️ Key `{selected_key}` does not have a HWID stored.", ephemeral=True)
+            else:
+                embed = discord.Embed(
+                    title="⚙️ Select Key to Reset HWID",
+                    description=f"You have **{len(active_keys)}** active keys.\nSelect which key you want to reset HWID for:",
+                    color=discord.Color.dark_purple()
+                )
+                view = ResetHWIDView(active_keys, panel_id)
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-            embed = discord.Embed(title="✅ HWID Reset Successful!", color=discord.Color.green())
-            embed.add_field(name="Panel", value=panel.get("title", "Unknown"), inline=False)
-            embed.add_field(name="Keys Reset", value=str(reset_count), inline=True)
-            embed.add_field(name="Note", value="Next time you run the script, your new HWID will be stored.", inline=False)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             print(f"reset_hwid_btn error: {e}")
             traceback.print_exc()
@@ -822,6 +918,15 @@ class PanelView(discord.ui.View):
                 save_json(PANEL_FILE, panels)
 
             user_data = users.get(uid)
+            if user_data and not isinstance(user_data, dict):
+                user_data = migrate_old_user_data(user_data, panel_id, keys)
+                users[uid] = user_data
+                save_json(USERS_FILE, users)
+            elif user_data and isinstance(user_data, dict) and "key" in user_data and "panels" not in user_data:
+                user_data = migrate_old_user_data(user_data, panel_id, keys)
+                users[uid] = user_data
+                save_json(USERS_FILE, users)
+
             panel_keys = get_user_keys_for_panel(user_data, panel_id, keys)
             if not panel_keys:
                 return await interaction.response.send_message("❌ You have no redeemed keys for this panel.", ephemeral=True)
