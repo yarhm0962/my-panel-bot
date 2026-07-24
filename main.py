@@ -137,16 +137,14 @@ def load_json(filename):
         col = panel_col
         docs = list(col.find({}))
         result = {}
-        old_format = False
         old_panel = {}
         for doc in docs:
             if '_id' in doc and 'title' in doc:
                 panel_id = doc['_id']
                 result[panel_id] = doc
             elif 'key' in doc and 'value' in doc:
-                old_format = True
                 old_panel[doc['key']] = doc['value']
-        if old_format and not result:
+        if old_panel:
             channel_id = old_panel.get("channel_id", "unknown")
             new_panel = {
                 "_id": channel_id,
@@ -160,9 +158,10 @@ def load_json(filename):
                 "creator": old_panel.get("creator", ""),
                 "script_id": old_panel.get("script_id", None)
             }
-            result[channel_id] = new_panel
-            col.delete_many({})
-            col.insert_one(new_panel)
+            if channel_id not in result:
+                result[channel_id] = new_panel
+                col.delete_many({"key": {"$exists": True}})
+                col.insert_one(new_panel)
         return result
     elif filename == "scripts":
         col = scripts_col
