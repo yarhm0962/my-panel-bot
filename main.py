@@ -586,6 +586,12 @@ class PanelView(discord.ui.View):
             if not panel:
                 return await interaction.response.send_message("⚠️ Panel not found.", ephemeral=True)
 
+            # ---- FORCE RELOAD FROM DB ----
+            panels = load_json(PANEL_FILE)
+            panel = panels.get(panel_id, {})
+            if not panel:
+                return await interaction.response.send_message("⚠️ Panel data missing.", ephemeral=True)
+
             if ensure_panel_guild(panel, guild_id):
                 panels[panel_id] = panel
                 save_json(PANEL_FILE, panels)
