@@ -13,11 +13,12 @@ import traceback
 import pymongo
 
 TOKEN = os.getenv("TOKEN")
-WEBSITE_DOMAIN = "api.booster.onrender.com"
+WEBSITE_DOMAIN = "api-booster.onrender.com"
 
-MONGODB_URI = os.getenv("MONGODB_URI")
-if not MONGODB_URI:
-    print("ERROR: MONGODB_URI environment variable not set.")
+MONGODB_URI = "mongodb+srv://xyrielzen16_db_user:saisai1324@panelbot.aubckg7.mongodb.net/?appName=PanelBot"
+
+if not TOKEN:
+    print("ERROR: TOKEN environment variable not set.")
     sys.exit(1)
 
 mongo_client = pymongo.MongoClient(MONGODB_URI)
@@ -609,7 +610,7 @@ class PanelView(discord.ui.View):
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
             script_id = panel["script_id"]
-            script_url = f"https://{WEBSITE_DOMAIN}/api/v3/lua/download/{script_id}"
+            script_url = f"https://{WEBSITE_DOMAIN}/v3/download/public/{script_id}"
 
             if is_user_whitelisted(uid, panel_id, whitelist_data):
                 loadstring_code = f'_G.WHITELISTED = true\nloadstring(game:HttpGet("{script_url}"))()'
@@ -1495,7 +1496,7 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         panels[panel_key] = panel
         save_json(PANEL_FILE, panels)
 
-        direct_link = f"https://{WEBSITE_DOMAIN}/api/v3/lua/download/{script_id}"
+        direct_link = f"https://{WEBSITE_DOMAIN}/v3/download/public/{script_id}"
 
         increment_obfuscation_count(guild_id)
 
@@ -1527,7 +1528,7 @@ def get_raw_script(script_id):
         return Response(scripts[script_id], mimetype="text/plain")
     return "Script Not Found", 404
 
-@app.route('/api/v3/lua/download/<script_id>')
+@app.route('/v3/download/public/<script_id>')
 def download_lua(script_id):
     user_agent = request.headers.get("User-Agent", "").lower()
     if any(x in user_agent for x in ["roblox", "luaclient", "httpclient", "http service", "game:httpget"]):
