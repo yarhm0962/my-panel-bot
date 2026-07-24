@@ -31,6 +31,50 @@ whitelist_col = db["whitelist"]
 obf_limit_col = db["obfuscation_limits"]
 hwid_limit_col = db["hwid_limits"]
 hwid_reset_counts_col = db["hwid_reset_counts"]
+keyless_scripts_col = db["keyless_scripts"]
+
+def load_keyless_scripts():
+    docs = list(keyless_scripts_col.find({}))
+    return {doc["script_id"]: doc["code"] for doc in docs}
+
+def save_keyless_script(script_id, code):
+    keyless_scripts_col.replace_one({"script_id": script_id}, {"script_id": script_id, "code": code}, upsert=True)
+
+def obfuscate_keyless_script(lua_code):
+    encoded = base64.b64encode(lua_code.encode()).decode()
+    chunks = []
+    i = 0
+    while i < len(encoded):
+        size = random.randint(3, 8)
+        chunks.append(encoded[i:i+size])
+        i += size
+    table_str = "{" + ",".join(f'"{chunk}"' for chunk in chunks) + "}"
+    wrapper = f'''
+local L = {table_str}
+local function b64decode(data)
+    local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    data=string.gsub(data,'[^'..b..'=]','')
+    local r={{}}
+    for i=1,#data,4 do
+        local chunk=data:sub(i,i+3)
+        local a,c,d,e=chunk:byte(1,4)
+        local x=(a and a~=61)and(b:find(string.char(a),1,true)-1)or 0
+        local y=(c and c~=61)and(b:find(string.char(c),1,true)-1)or 0
+        local z=(d and d~=61)and(b:find(string.char(d),1,true)-1)or 0
+        local w=(e and e~=61)and(b:find(string.char(e),1,true)-1)or 0
+        local n1=(x*4)+math.floor(y/16)
+        local n2=((y%16)*16)+math.floor(z/4)
+        local n3=((z%4)*64)+w
+        table.insert(r,string.char(n1))
+        if c and c~=61 then table.insert(r,string.char(n2)) end
+        if d and d~=61 then table.insert(r,string.char(n3)) end
+    end
+    return table.concat(r)
+end
+local decoded = b64decode(table.concat(L))
+loadstring(decoded)()
+'''
+    return wrapper
 
 def load_json(filename):
     if filename == "keys":
@@ -116,7 +160,7 @@ def get_hwid_limit(guild_id):
     doc = hwid_limit_col.find_one({"guild_id": str(guild_id)})
     if doc:
         return doc.get("limit", 10)
-    return 10  # default max
+    return 10
 
 def set_hwid_limit(guild_id, limit):
     hwid_limit_col.replace_one({"guild_id": str(guild_id)}, {"guild_id": str(guild_id), "limit": limit}, upsert=True)
@@ -1332,6 +1376,72 @@ async def hwid_limit(interaction: discord.Interaction, limit: int):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
+@client.tree.command(name="keyless_script", description="Upload a Lua script and get a loadstring with no key required (Admin only)")
+@app_commands.describe(file="Upload .lua or .txt file")
+async def keyless_script(interaction: discord.Interaction, file: discord.Attachment):
+    try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("No permission.", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild.id)
+        count, reset_time = check_obfuscation_limit(guild_id)
+        if count >= 20:
+            if reset_time:
+                time_left = format_time_left(reset_time)
+                await interaction.response.send_message(
+                    f"❌ **You have reached the limit of 20 obfuscations in 7 days.**\n"
+                    f"You can obfuscate again after **{reset_time.strftime('%Y-%m-%d %H:%M UTC')}** *(in {time_left})*.\n"
+                    f"Contact the owner to buy a premium.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ You have reached the limit of 20 obfuscations in 7 days. Contact the owner to buy a premium.",
+                    ephemeral=True
+                )
+            return
+
+        if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
+            await interaction.response.send_message("❌ Only .lua or .txt files accepted.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("🔄 Obfuscating and securing script...", ephemeral=True)
+
+        content = await file.read()
+        lua_code = content.decode("utf-8")
+
+        obfuscated_code = obfuscate_keyless_script(lua_code)
+        script_id = generate_script_id()
+
+        save_keyless_script(script_id, obfuscated_code)
+
+        increment_obfuscation_count(guild_id)
+
+        direct_link = f"https://{WEBSITE_DOMAIN}/keyless/{script_id}.lua"
+        loadstring_code = f'loadstring(game:HttpGet("{direct_link}"))()'
+
+        count_after = count + 1
+        count_msg = f"{count_after}/20"
+        if reset_time:
+            count_msg += f" (resets {reset_time.strftime('%Y-%m-%d %H:%M UTC')})"
+
+        embed = discord.Embed(title="✅ Keyless Script Created!", color=discord.Color.green())
+        embed.add_field(name="Direct Link", value=f"`{direct_link}`", inline=False)
+        embed.add_field(name="Loadstring", value=f"```lua\n{loadstring_code}\n```", inline=False)
+        embed.add_field(name="Obfuscations Used", value=count_msg, inline=False)
+        embed.set_footer(text="No key required – anyone can execute this script.")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    except Exception as e:
+        print(f"keyless_script error: {e}")
+        traceback.print_exc()
+        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+
 @client.tree.command(name="whitelist", description="Whitelist a user for a specific panel (Admin only)")
 @app_commands.describe(panel="Channel ID or Message ID of the panel", user="User to whitelist", expiration="Number of days until whitelist expires")
 async def whitelist(interaction: discord.Interaction, panel: str, user: discord.User, expiration: int):
@@ -1641,7 +1751,6 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
             filename=f"obfuscated_{script_id}.lua"
         )
 
-        # Show obfuscation count
         count_after = count + 1
         count_msg = f"{count_after}/20"
         if reset_time:
@@ -1713,6 +1822,52 @@ def download_lua(script_id):
                 <div class="subtitle">You <strong>Cannot</strong> Bypass It</div>
                 <div class="desc">Only valid key holders can run this script.<br>Access is restricted to authorized users only.</div>
                 <div class="brand">⚡ <span>M1rage</span> Protection System ⚡</div>
+            </div>
+        </body>
+        </html>
+        ''', 200, {'Content-Type': 'text/html'}
+
+@app.route("/keyless/<script_id>.lua")
+def serve_keyless(script_id):
+    user_agent = request.headers.get("User-Agent", "").lower()
+    if any(x in user_agent for x in ["roblox", "luaclient", "httpclient", "http service", "game:httpget"]):
+        scripts = load_keyless_scripts()
+        if script_id in scripts:
+            return Response(scripts[script_id], mimetype="text/plain")
+        return "Script Not Found", 404
+    else:
+        return '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>🔓 Keyless Script</title>
+            <style>
+                * { margin:0; padding:0; box-sizing:border-box; }
+                body { background:#0a0a0f; display:flex; justify-content:center; align-items:center; min-height:100vh; font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif; margin:0; padding:20px; color:#eee; background:radial-gradient(circle at 30% 30%, #12121a, #08080c); }
+                .container { max-width:700px; text-align:center; background:rgba(20,20,30,0.7); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); padding:50px 40px; border-radius:30px; border:1px solid rgba(100,100,255,0.15); box-shadow:0 25px 60px rgba(0,0,0,0.8), 0 0 40px rgba(100,100,255,0.05); transition:all 0.3s ease; position:relative; overflow:hidden; }
+                .icon { font-size:80px; margin-bottom:20px; filter:drop-shadow(0 0 30px rgba(0,255,100,0.3)); animation:pulse 2s infinite; }
+                @keyframes pulse { 0% { transform:scale(1); } 50% { transform:scale(1.05); } 100% { transform:scale(1); } }
+                h1 { font-size:42px; font-weight:800; background:linear-gradient(135deg, #66ff66, #33cc33, #44ff44); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; letter-spacing:2px; margin-bottom:15px; }
+                .subtitle { font-size:22px; font-weight:300; color:#ccc; margin-bottom:8px; letter-spacing:1px; }
+                .desc { font-size:18px; color:#aaa; margin:20px 0 30px; line-height:1.6; border-top:1px solid rgba(255,255,255,0.05); padding-top:25px; }
+                .brand { font-size:14px; color:#555; letter-spacing:2px; text-transform:uppercase; margin-top:20px; opacity:0.7; }
+                .brand span { color:#888; font-weight:600; }
+                .glow { position:absolute; width:200px; height:200px; border-radius:50%; background:rgba(0,255,100,0.08); filter:blur(80px); top:-50px; right:-50px; pointer-events:none; }
+                .glow2 { position:absolute; width:300px; height:300px; border-radius:50%; background:rgba(0,255,100,0.06); filter:blur(100px); bottom:-100px; left:-100px; pointer-events:none; }
+                @media (max-width:500px) { .container { padding:30px 20px; } h1 { font-size:28px; } .icon { font-size:60px; } .subtitle { font-size:18px; } .desc { font-size:15px; } }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="glow"></div>
+                <div class="glow2"></div>
+                <div class="icon">🔓</div>
+                <h1>THIS IS A KEYLESS SCRIPT</h1>
+                <div class="subtitle">No Key Required</div>
+                <div class="desc">This script can be executed without any key.<br>Still protected against unauthorized access.</div>
+                <div class="brand">⚡ <span>M1rage</span> Keyless System ⚡</div>
             </div>
         </body>
         </html>
