@@ -1120,9 +1120,11 @@ async def view_all_keys(interaction: discord.Interaction):
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
-@client.tree.command(name="delete_keys", description="Delete one or more keys (Admin only)")
-@app_commands.describe(key="Specific key to delete", user="Delete all keys for this user")
-async def delete_keys(interaction: discord.Interaction, key: str = None, user: discord.User = None):
+# ---------------- MODIFIED / NEW COMMANDS START ----------------
+
+@client.tree.command(name="delete_key", description="Delete a specific key (Admin only)")
+@app_commands.describe(key="The key to delete")
+async def delete_key(interaction: discord.Interaction, key: str):
     try:
         if not interaction.guild:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
@@ -1131,8 +1133,38 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
             await interaction.response.send_message("No permission.", ephemeral=True)
             return
 
-        if not key and not user:
-            await interaction.response.send_message("You must specify either a key or a user.", ephemeral=True)
+        guild_id = str(interaction.guild.id)
+        keys = load_json(KEYS_FILE)
+
+        if key not in keys:
+            await interaction.response.send_message(f"Key `{key}` not found.", ephemeral=True)
+            return
+
+        # Check if key belongs to this guild (allow guild_id None as legacy)
+        key_guild = keys[key].get("guild_id")
+        if key_guild not in (guild_id, None):
+            await interaction.response.send_message("❌ That key does not belong to this server.", ephemeral=True)
+            return
+
+        del keys[key]
+        save_json(KEYS_FILE, keys)
+        await interaction.response.send_message(f"✅ Deleted key `{key}`.", ephemeral=True)
+
+    except Exception as e:
+        print(f"delete_key error: {e}")
+        traceback.print_exc()
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+
+@client.tree.command(name="delete_user_keys", description="Delete all keys belonging to a specific user (Admin only)")
+@app_commands.describe(user="The user whose keys will be deleted")
+async def delete_user_keys(interaction: discord.Interaction, user: discord.User):
+    try:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("No permission.", ephemeral=True)
             return
 
         guild_id = str(interaction.guild.id)
@@ -1141,30 +1173,30 @@ async def delete_keys(interaction: discord.Interaction, key: str = None, user: d
             await interaction.response.send_message("No keys exist.", ephemeral=True)
             return
 
-        deleted_count = 0
-        if key:
-            if key in keys and (keys[key].get("guild_id") == guild_id or keys[key].get("guild_id") is None):
-                del keys[key]
-                deleted_count = 1
-            else:
-                await interaction.response.send_message(f"Key `{key}` not found in this server.", ephemeral=True)
-                return
-        elif user:
-            uid = str(user.id)
-            to_delete = [k for k, v in keys.items() if v.get("owner") == uid and (v.get("guild_id") == guild_id or v.get("guild_id") is None)]
-            if not to_delete:
-                await interaction.response.send_message(f"No keys found for user {user.mention} in this server.", ephemeral=True)
-                return
-            for k in to_delete:
-                del keys[k]
-            deleted_count = len(to_delete)
+        uid = str(user.id)
+        to_delete = []
+        for k, v in keys.items():
+            if v.get("owner") == uid:
+                key_guild = v.get("guild_id")
+                if key_guild is None or key_guild == guild_id:
+                    to_delete.append(k)
 
+        if not to_delete:
+            await interaction.response.send_message(f"No keys found for {user.mention} in this server.", ephemeral=True)
+            return
+
+        for k in to_delete:
+            del keys[k]
         save_json(KEYS_FILE, keys)
-        await interaction.response.send_message(f"✅ Deleted {deleted_count} key(s).", ephemeral=True)
+
+        await interaction.response.send_message(f"✅ Deleted {len(to_delete)} key(s) belonging to {user.mention}.", ephemeral=True)
+
     except Exception as e:
-        print(f"delete_keys error: {e}")
+        print(f"delete_user_keys error: {e}")
         traceback.print_exc()
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+# ---------------- MODIFIED / NEW COMMANDS END ----------------
 
 @client.tree.command(name="reset_hwid", description="Reset HWID for a specific key (Admin only)")
 @app_commands.describe(key="The key to reset HWID for")
