@@ -28,10 +28,77 @@ users_col = db["users"]
 panel_col = db["panel"]
 scripts_col = db["scripts"]
 whitelist_col = db["whitelist"]
-obf_limit_col = db["obfuscation_limits"]
+obf_limit_col = db["obf_limit_state"]  # new collection for the new limit system
 hwid_limit_col = db["hwid_limits"]
 hwid_reset_counts_col = db["hwid_reset_counts"]
 keyless_scripts_col = db["keyless_scripts"]
+
+# --- New obfuscation limit (cumulative, reset only after hitting 20 + 7-day cooldown) ---
+
+def get_obf_state(guild_id):
+    """Return (count, lockout_until) for this guild."""
+    doc = obf_limit_col.find_one({"guild_id": str(guild_id)})
+    if doc:
+        count = doc.get("count", 0)
+        lockout_until = None
+        if doc.get("lockout_until"):
+            lockout_until = datetime.fromisoformat(doc["lockout_until"])
+        return count, lockout_until
+    return 0, None
+
+def set_obf_state(guild_id, count, lockout_until=None):
+    data = {"guild_id": str(guild_id), "count": count}
+    if lockout_until:
+        data["lockout_until"] = lockout_until.isoformat()
+    else:
+        data["lockout_until"] = None
+    obf_limit_col.replace_one({"guild_id": str(guild_id)}, data, upsert=True)
+
+def check_obfuscation_limit(guild_id):
+    """Returns (can_obfuscate, message) – for use in commands."""
+    count, lockout_until = get_obf_state(guild_id)
+    now = datetime.now(timezone.utc)
+
+    if lockout_until and lockout_until > now:
+        # still in lockout
+        return False, f"❌ Limit reached. Lockout until {lockout_until.strftime('%Y-%m-%d %H:%M UTC')} (in {format_time_left(lockout_until)})."
+    if lockout_until and lockout_until <= now:
+        # lockout expired, reset count
+        set_obf_state(guild_id, 0, None)
+        return True, None
+    # No lockout, check count
+    if count >= 20:
+        # Trigger lockout (should not normally happen here because we set it when reaching 20)
+        lockout_until = now + timedelta(days=7)
+        set_obf_state(guild_id, count, lockout_until)
+        return False, f"❌ Limit reached. Lockout until {lockout_until.strftime('%Y-%m-%d %H:%M UTC')} (in 7 days)."
+    return True, None
+
+def increment_obfuscation_count(guild_id):
+    """Call after successful obfuscation. Will auto‑trigger lockout if count becomes 20."""
+    count, lockout_until = get_obf_state(guild_id)
+    now = datetime.now(timezone.utc)
+    # If lockout is active and still valid, we shouldn't be here, but handle gracefully
+    if lockout_until and lockout_until > now:
+        return  # shouldn't increment during lockout
+    if lockout_until and lockout_until <= now:
+        # lockout expired, reset count before incrementing
+        count = 0
+        lockout_until = None
+    count += 1
+    if count >= 20:
+        lockout_until = now + timedelta(days=7)
+    set_obf_state(guild_id, count, lockout_until)
+
+def format_obf_count_message(guild_id):
+    """Return a string like '15/20' or '5/20 (lockout ends ...)'."""
+    count, lockout_until = get_obf_state(guild_id)
+    now = datetime.now(timezone.utc)
+    if lockout_until and lockout_until > now:
+        return f"{count}/20 🔒 (unlocks {lockout_until.strftime('%Y-%m-%d %H:%M UTC')}, in {format_time_left(lockout_until)})"
+    return f"{count}/20"
+
+# --- Rest of the original functions (unchanged except removing old obf limit functions) ---
 
 def load_keyless_scripts():
     docs = list(keyless_scripts_col.find({}))
@@ -204,20 +271,6 @@ def format_days(days):
     if remaining == 0:
         return f"{years} years"
     return f"{years} years, {remaining} days"
-
-def check_obfuscation_limit(guild_id):
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=7)
-    obf_limit_col.delete_many({"guild_id": guild_id, "timestamp": {"$lt": cutoff}})
-    count = obf_limit_col.count_documents({"guild_id": guild_id})
-    oldest = obf_limit_col.find_one({"guild_id": guild_id}, sort=[("timestamp", 1)])
-    reset_time = None
-    if oldest:
-        reset_time = oldest["timestamp"] + timedelta(days=7)
-    return count, reset_time
-
-def increment_obfuscation_count(guild_id):
-    obf_limit_col.insert_one({"guild_id": guild_id, "timestamp": datetime.now(timezone.utc)})
 
 def format_time_left(dt):
     now = datetime.now(timezone.utc)
@@ -1388,21 +1441,9 @@ async def keyless_script(interaction: discord.Interaction, file: discord.Attachm
             return
 
         guild_id = str(interaction.guild.id)
-        count, reset_time = check_obfuscation_limit(guild_id)
-        if count >= 20:
-            if reset_time:
-                time_left = format_time_left(reset_time)
-                await interaction.response.send_message(
-                    f"❌ **You have reached the limit of 20 obfuscations in 7 days.**\n"
-                    f"You can obfuscate again after **{reset_time.strftime('%Y-%m-%d %H:%M UTC')}** *(in {time_left})*.\n"
-                    f"Contact the owner to buy a premium.",
-                    ephemeral=True
-                )
-            else:
-                await interaction.response.send_message(
-                    "❌ You have reached the limit of 20 obfuscations in 7 days. Contact the owner to buy a premium.",
-                    ephemeral=True
-                )
+        can_obf, msg = check_obfuscation_limit(guild_id)
+        if not can_obf:
+            await interaction.response.send_message(msg, ephemeral=True)
             return
 
         if not (file.filename.endswith(".lua") or file.filename.endswith(".txt")):
@@ -1419,15 +1460,12 @@ async def keyless_script(interaction: discord.Interaction, file: discord.Attachm
 
         save_keyless_script(script_id, obfuscated_code)
 
-        increment_obfuscation_count(guild_id)
+        increment_obfuscation_count(guild_id)  # this will handle lockout if needed
 
         direct_link = f"https://{WEBSITE_DOMAIN}/keyless/{script_id}.lua"
         loadstring_code = f'loadstring(game:HttpGet("{direct_link}"))()'
 
-        count_after = count + 1
-        count_msg = f"{count_after}/20"
-        if reset_time:
-            count_msg += f" (resets {reset_time.strftime('%Y-%m-%d %H:%M UTC')})"
+        count_msg = format_obf_count_message(guild_id)
 
         embed = discord.Embed(title="✅ Keyless Script Created!", color=discord.Color.green())
         embed.add_field(name="Direct Link", value=f"`{direct_link}`", inline=False)
@@ -1684,21 +1722,9 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
             return
 
         guild_id = str(interaction.guild.id)
-        count, reset_time = check_obfuscation_limit(guild_id)
-        if count >= 20:
-            if reset_time:
-                time_left = format_time_left(reset_time)
-                await interaction.response.send_message(
-                    f"❌ **You have reached the limit of 20 obfuscations in 7 days.**\n"
-                    f"You can obfuscate again after **{reset_time.strftime('%Y-%m-%d %H:%M UTC')}** *(in {time_left})*.\n"
-                    f"Contact the owner to buy a premium.",
-                    ephemeral=True
-                )
-            else:
-                await interaction.response.send_message(
-                    "❌ You have reached the limit of 20 obfuscations in 7 days. Contact the owner to buy a premium.",
-                    ephemeral=True
-                )
+        can_obf, msg = check_obfuscation_limit(guild_id)
+        if not can_obf:
+            await interaction.response.send_message(msg, ephemeral=True)
             return
 
         panels = load_json(PANEL_FILE)
@@ -1751,10 +1777,7 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
             filename=f"obfuscated_{script_id}.lua"
         )
 
-        count_after = count + 1
-        count_msg = f"{count_after}/20"
-        if reset_time:
-            count_msg += f" (resets {reset_time.strftime('%Y-%m-%d %H:%M UTC')})"
+        count_msg = format_obf_count_message(guild_id)
 
         embed = discord.Embed(title="✅ Script Added Successfully!", color=discord.Color.green())
         embed.add_field(name="Panel", value=f"Message ID: {message_id}", inline=False)
