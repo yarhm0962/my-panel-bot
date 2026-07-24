@@ -534,13 +534,13 @@ class KeySelectView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction):
         selected_key = interaction.data["values"][0]
         if self.is_whitelisted:
-            loadstring_code = f'_G.WHITELISTED = true\nloadstring(game:HttpGet("{self.script_url}"))()'
+            loadstring_code = f'_G.SCRIPT_KEY = "{selected_key}"\nloadstring(game:HttpGet("{self.script_url}"))()'
         else:
             loadstring_code = f'_G.SCRIPT_KEY = "{selected_key}"\nloadstring(game:HttpGet("{self.script_url}"))()'
 
         embed = discord.Embed(title="📜 Your Script", color=discord.Color.green())
         embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
-        embed.set_footer(text=("You are whitelisted – no SCRIPT_KEY required!" if self.is_whitelisted else "SCRIPT_KEY is REQUIRED — script will NOT work without it!"))
+        embed.set_footer(text="HWID will be locked on first execution.")
         await interaction.response.edit_message(embed=embed, view=None)
 
 class ResetHWIDView(discord.ui.View):
@@ -637,10 +637,31 @@ class PanelView(discord.ui.View):
             script_url = f"https://{WEBSITE_DOMAIN}/api/v3/loaders/file/{script_id}.lua"
 
             if is_user_whitelisted(uid, panel_id, whitelist_data):
-                loadstring_code = f'_G.WHITELISTED = true\nloadstring(game:HttpGet("{script_url}"))()'
+                user_data = users.get(uid)
+                if user_data is None:
+                    user_data = {"panels": {}}
+                elif not isinstance(user_data, dict):
+                    user_data = safe_migrate_old_data(user_data, panel_id)
+                elif "panels" not in user_data:
+                    user_data = safe_migrate_old_data(user_data, panel_id)
+
+                panel_keys = user_data.get("panels", {}).get(panel_id, {}).get("keys", [])
+                active_key = None
+                for k in panel_keys:
+                    if k in keys and keys[k]["active"]:
+                        key_panel = keys[k].get("panel_id")
+                        key_guild = keys[k].get("guild_id")
+                        if (key_panel is None or key_panel == panel_id) and (key_guild is None or key_guild == guild_id):
+                            active_key = k
+                            break
+
+                if not active_key:
+                    return await interaction.response.send_message("❌ Your whitelist key is missing or expired. Contact an admin.", ephemeral=True)
+
+                loadstring_code = f'_G.SCRIPT_KEY = "{active_key}"\nloadstring(game:HttpGet("{script_url}"))()'
                 embed = discord.Embed(title="📜 Your Script (Whitelisted)", color=discord.Color.green())
                 embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
-                embed.set_footer(text="You are whitelisted – no SCRIPT_KEY required!")
+                embed.set_footer(text="Whitelisted – HWID lock will apply on first execution.")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
@@ -675,7 +696,7 @@ class PanelView(discord.ui.View):
                 loadstring_code = f'_G.SCRIPT_KEY = "{user_key}"\nloadstring(game:HttpGet("{script_url}"))()'
                 embed = discord.Embed(title="📜 Your Script", color=discord.Color.green())
                 embed.add_field(name="Copy this FULL code:", value=f"```lua\n{loadstring_code}\n```", inline=False)
-                embed.set_footer(text="SCRIPT_KEY is REQUIRED — script will NOT work without it!")
+                embed.set_footer(text="HWID will be locked on first execution.")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
             else:
                 embed = discord.Embed(
@@ -1352,8 +1373,8 @@ async def whitelist(interaction: discord.Interaction, panel: str, user: discord.
                 name="Instructions",
                 value=(
                     "You are now whitelisted for this panel. "
-                    "You **do not need** to use the key. "
-                    "Just click the **'Get Script'** button on the panel to get the script."
+                    "Click the **'Get Script'** button on the panel to get your script.\n"
+                    "Your script will be locked to your first device automatically."
                 ),
                 inline=False
             )
@@ -1362,7 +1383,7 @@ async def whitelist(interaction: discord.Interaction, panel: str, user: discord.
                 value=expires.strftime("%Y-%m-%d %H:%M UTC"),
                 inline=False
             )
-            dm_embed.set_footer(text="You can always use the key if you want, but it's not required.")
+            dm_embed.set_footer(text="Your key is pre-loaded into the script — no need to enter it manually.")
             await user.send(embed=dm_embed)
         except discord.Forbidden:
             pass
