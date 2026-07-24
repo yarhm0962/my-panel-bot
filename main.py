@@ -146,22 +146,27 @@ def load_json(filename):
                 old_panel[doc['key']] = doc['value']
         if old_panel:
             channel_id = old_panel.get("channel_id", "unknown")
-            new_panel = {
-                "_id": channel_id,
-                "title": old_panel.get("title", "Untitled"),
-                "description": old_panel.get("description", ""),
-                "channel_id": channel_id,
-                "message_id": old_panel.get("message_id", ""),
-                "role_id": old_panel.get("role_id", ""),
-                "guild_id": old_panel.get("guild_id", ""),
-                "created_at": old_panel.get("created_at", ""),
-                "creator": old_panel.get("creator", ""),
-                "script_id": old_panel.get("script_id", None)
-            }
-            if channel_id not in result:
+            if channel_id in result:
+                existing = result[channel_id]
+                if not existing.get("script_id") and old_panel.get("script_id"):
+                    existing["script_id"] = old_panel["script_id"]
+                    col.update_one({"_id": channel_id}, {"$set": {"script_id": old_panel["script_id"]}})
+            else:
+                new_panel = {
+                    "_id": channel_id,
+                    "title": old_panel.get("title", "Untitled"),
+                    "description": old_panel.get("description", ""),
+                    "channel_id": channel_id,
+                    "message_id": old_panel.get("message_id", ""),
+                    "role_id": old_panel.get("role_id", ""),
+                    "guild_id": old_panel.get("guild_id", ""),
+                    "created_at": old_panel.get("created_at", ""),
+                    "creator": old_panel.get("creator", ""),
+                    "script_id": old_panel.get("script_id", None)
+                }
                 result[channel_id] = new_panel
-                col.delete_many({"key": {"$exists": True}})
                 col.insert_one(new_panel)
+            col.delete_many({"key": {"$exists": True}})
         return result
     elif filename == "scripts":
         col = scripts_col
