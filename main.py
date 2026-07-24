@@ -28,15 +28,12 @@ users_col = db["users"]
 panel_col = db["panel"]
 scripts_col = db["scripts"]
 whitelist_col = db["whitelist"]
-obf_limit_col = db["obf_limit_state"]  # new collection for the new limit system
+obf_limit_col = db["obf_limit_state"]
 hwid_limit_col = db["hwid_limits"]
 hwid_reset_counts_col = db["hwid_reset_counts"]
 keyless_scripts_col = db["keyless_scripts"]
 
-# --- New obfuscation limit (cumulative, reset only after hitting 20 + 7-day cooldown) ---
-
 def get_obf_state(guild_id):
-    """Return (count, lockout_until) for this guild."""
     doc = obf_limit_col.find_one({"guild_id": str(guild_id)})
     if doc:
         count = doc.get("count", 0)
@@ -55,34 +52,25 @@ def set_obf_state(guild_id, count, lockout_until=None):
     obf_limit_col.replace_one({"guild_id": str(guild_id)}, data, upsert=True)
 
 def check_obfuscation_limit(guild_id):
-    """Returns (can_obfuscate, message) – for use in commands."""
     count, lockout_until = get_obf_state(guild_id)
     now = datetime.now(timezone.utc)
-
     if lockout_until and lockout_until > now:
-        # still in lockout
         return False, f"❌ Limit reached. Lockout until {lockout_until.strftime('%Y-%m-%d %H:%M UTC')} (in {format_time_left(lockout_until)})."
     if lockout_until and lockout_until <= now:
-        # lockout expired, reset count
         set_obf_state(guild_id, 0, None)
         return True, None
-    # No lockout, check count
     if count >= 20:
-        # Trigger lockout (should not normally happen here because we set it when reaching 20)
         lockout_until = now + timedelta(days=7)
         set_obf_state(guild_id, count, lockout_until)
         return False, f"❌ Limit reached. Lockout until {lockout_until.strftime('%Y-%m-%d %H:%M UTC')} (in 7 days)."
     return True, None
 
 def increment_obfuscation_count(guild_id):
-    """Call after successful obfuscation. Will auto‑trigger lockout if count becomes 20."""
     count, lockout_until = get_obf_state(guild_id)
     now = datetime.now(timezone.utc)
-    # If lockout is active and still valid, we shouldn't be here, but handle gracefully
     if lockout_until and lockout_until > now:
-        return  # shouldn't increment during lockout
+        return
     if lockout_until and lockout_until <= now:
-        # lockout expired, reset count before incrementing
         count = 0
         lockout_until = None
     count += 1
@@ -91,14 +79,11 @@ def increment_obfuscation_count(guild_id):
     set_obf_state(guild_id, count, lockout_until)
 
 def format_obf_count_message(guild_id):
-    """Return a string like '15/20' or '5/20 (lockout ends ...)'."""
     count, lockout_until = get_obf_state(guild_id)
     now = datetime.now(timezone.utc)
     if lockout_until and lockout_until > now:
         return f"{count}/20 🔒 (unlocks {lockout_until.strftime('%Y-%m-%d %H:%M UTC')}, in {format_time_left(lockout_until)})"
     return f"{count}/20"
-
-# --- Rest of the original functions (unchanged except removing old obf limit functions) ---
 
 def load_keyless_scripts():
     docs = list(keyless_scripts_col.find({}))
@@ -762,7 +747,7 @@ class PanelView(discord.ui.View):
                 return await interaction.response.send_message("⚠️ No script has been added to this panel yet.", ephemeral=True)
 
             script_id = panel["script_id"]
-            script_url = f"https://{WEBSITE_DOMAIN}/api/v3/loaders/file/{script_id}.lua"
+            script_url = f"https://{WEBSITE_DOMAIN}/files/v3/loaders/{script_id}.lua"
 
             if is_user_whitelisted(uid, panel_id, whitelist_data):
                 user_data = users.get(uid)
@@ -1460,7 +1445,7 @@ async def keyless_script(interaction: discord.Interaction, file: discord.Attachm
 
         save_keyless_script(script_id, obfuscated_code)
 
-        increment_obfuscation_count(guild_id)  # this will handle lockout if needed
+        increment_obfuscation_count(guild_id)
 
         direct_link = f"https://{WEBSITE_DOMAIN}/keyless/{script_id}.lua"
         loadstring_code = f'loadstring(game:HttpGet("{direct_link}"))()'
@@ -1768,7 +1753,7 @@ async def add_script(interaction: discord.Interaction, message_id: str, file: di
         panels[panel_key] = panel
         save_json(PANEL_FILE, panels)
 
-        direct_link = f"https://{WEBSITE_DOMAIN}/api/v3/loaders/file/{script_id}.lua"
+        direct_link = f"https://{WEBSITE_DOMAIN}/files/v3/loaders/{script_id}.lua"
 
         increment_obfuscation_count(guild_id)
 
@@ -1803,7 +1788,7 @@ def get_raw_script(script_id):
         return Response(scripts[script_id], mimetype="text/plain")
     return "Script Not Found", 404
 
-@app.route('/api/v3/loaders/file/<script_id>.lua')
+@app.route('/files/v3/loaders/<script_id>.lua')
 def download_lua(script_id):
     user_agent = request.headers.get("User-Agent", "").lower()
     if any(x in user_agent for x in ["roblox", "luaclient", "httpclient", "http service", "game:httpget"]):
